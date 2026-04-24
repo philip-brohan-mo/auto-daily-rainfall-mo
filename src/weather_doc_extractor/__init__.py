@@ -1,0 +1,2 @@
+"""Weather document extraction package."""
+

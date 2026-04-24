@@ -1,0 +1,18 @@
+name: weather-doc-extractor
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pillow
+  - matplotlib
+  - pip:
+      - -e .
+      - accelerate
+      - datasets
+      - huggingface_hub
+      - peft
+      - torch
+      - torchvision
+      - transformers
+      - trl

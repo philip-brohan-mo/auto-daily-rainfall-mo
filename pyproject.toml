@@ -1,0 +1,33 @@
+[project]
+name = "weather-document-extractor"
+version = "0.1.0"
+description = "Tools for extracting weather data from document images with mini-LLMs and TRL."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pillow",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+train = [
+    "accelerate",
+    "datasets",
+    "peft",
+    "torch",
+    "transformers",
+    "trl",
+]
+
+[project.scripts]
+weather-extract = "weather_doc_extractor.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
