@@ -1,0 +1,24 @@
+# Azure ML snapshot ignore — keeps the uploaded code snapshot small.
+# Only src/, pyproject.toml, and azureml/ are needed on the compute node.
+
+# Sample / local data (lives on the datastore, not in the snapshot)
+Daily_rainfall_sample/
+outputs/
+
+# Documentation
+docs/
+mkdocs.yml
+README.md
+
+# Tests (not needed at runtime)
+tests/
+.pytest_cache/
+
+# Local environment files
+environment.yml
+condaenv.*.requirements.txt
+azureml/config.env
+
+# Dev tooling
+.github/
+.git/
