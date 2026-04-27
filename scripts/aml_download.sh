@@ -60,7 +60,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "${TARGETS[*]:-}" && -z "$CUSTOM_SRC" ]]; then
+if [[ ${#TARGETS[@]} -eq 0 && -z "$CUSTOM_SRC" ]]; then
     echo "Error: specify what to download (extractions|eval|checkpoints|all) or --src/--dst" >&2
     usage 1
 fi
@@ -110,7 +110,7 @@ do_download() {
 }
 
 # ── Run downloads ─────────────────────────────────────────────────────────────
-for target in "${TARGETS[@]:-}"; do
+for target in "${TARGETS[@]}"; do
     case "$target" in
         extractions)
             do_download "$AML_OUTPUTS_PATH/extractions" "$OUTPUT_DIR/extractions"

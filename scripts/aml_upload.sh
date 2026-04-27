@@ -63,7 +63,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "${TARGETS[*]:-}" && -z "$CUSTOM_SRC" ]]; then
+if [[ ${#TARGETS[@]} -eq 0 && -z "$CUSTOM_SRC" ]]; then
     echo "Error: specify what to upload (images|transcriptions|all) or --src/--dst" >&2
     usage 1
 fi
@@ -112,7 +112,7 @@ do_upload() {
 }
 
 # ── Run uploads ───────────────────────────────────────────────────────────────
-for target in "${TARGETS[@]:-}"; do
+for target in "${TARGETS[@]}"; do
     case "$target" in
         images)
             do_upload "$LOCAL_IMAGES" "$AML_IMAGES_PATH"
