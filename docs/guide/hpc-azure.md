@@ -47,45 +47,50 @@ The pipeline has three compute-intensive stages suited to HPC:
         --subscription <subscription>
     ```
 
-You can avoid typing `--subscription`, `--resource-group`, and `--workspace-name` on every command by setting defaults:
+---
+
+## Configuration file
+
+Copy the template and fill in your values — you only need to do this once:
 
 ```bash
-az configure --defaults group=<resource-group> workspace=<workspace>
-# Subscription default:
-az account set --subscription <subscription>
+cp azureml/config.env.example azureml/config.env
 ```
 
-Or export them for the submission script:
+Then edit `azureml/config.env`:
 
 ```bash
-export AML_SUBSCRIPTION=<subscription>
-export AML_RESOURCE_GROUP=<resource-group>
-export AML_WORKSPACE=<workspace>
+# Workspace coordinates
+AML_SUBSCRIPTION=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+AML_RESOURCE_GROUP=my-resource-group
+AML_WORKSPACE=my-aml-workspace
+
+# Compute cluster name
+AML_COMPUTE=gpu-cluster
+
+# Base datastore URI — the default store is created automatically with the workspace
+AML_DATASTORE_BASE=azureml://datastores/workspaceblobstore/paths
+
+# Input paths (relative to AML_DATASTORE_BASE)
+AML_IMAGES_PATH=Daily_rainfall_sample/images
+AML_TRANSCRIPTIONS_PATH=Daily_rainfall_sample/transcriptions
+
+# Output root (relative to AML_DATASTORE_BASE)
+# Jobs write to sub-paths: outputs/extractions, outputs/eval, outputs/checkpoints
+AML_OUTPUTS_PATH=outputs
 ```
+
+`azureml/config.env` is gitignored so your subscription ID is never committed.
+CLI flags (`--subscription`, `--workspace`, etc.) override any value in the file.
 
 ---
 
 ## Register the Azure ML environment (once)
 
-The `azureml/` directory contains the environment definition and job YAML files.
 Register the environment before submitting jobs for the first time:
 
 ```bash
-bash scripts/aml_submit.sh \
-    --subscription "$AML_SUBSCRIPTION" \
-    --resource-group "$AML_RESOURCE_GROUP" \
-    --workspace "$AML_WORKSPACE" \
-    env
-```
-
-Or directly:
-
-```bash
-az ml environment create \
-    --file azureml/environment.yml \
-    --workspace-name "$AML_WORKSPACE" \
-    --resource-group "$AML_RESOURCE_GROUP" \
-    --subscription "$AML_SUBSCRIPTION"
+bash scripts/aml_submit.sh env
 ```
 
 The environment uses a PyTorch 2.2 + CUDA 12.1 base image.  Edit
@@ -202,32 +207,19 @@ weather-extract batch-extract \
 
 ### Sharded job array (Azure ML)
 
-Use `scripts/aml_submit.sh` to submit one Azure ML job per shard:
+Use `scripts/aml_submit.sh` — it reads workspace coordinates and paths from
+`azureml/config.env` automatically:
 
 ```bash
-bash scripts/aml_submit.sh \
-    --subscription "$AML_SUBSCRIPTION" \
-    --resource-group "$AML_RESOURCE_GROUP" \
-    --workspace "$AML_WORKSPACE" \
-    --total-shards 8 \
-    extract
+bash scripts/aml_submit.sh --total-shards 8 extract
 ```
 
-Or submit a single shard directly with the Azure ML CLI:
+The script prints the resolved workspace, compute, and data paths before
+submitting so you can verify them.  Override any value on the command line:
 
 ```bash
-az ml job create \
-    --file azureml/extract_job.yml \
-    --workspace-name "$AML_WORKSPACE" \
-    --resource-group "$AML_RESOURCE_GROUP" \
-    --subscription "$AML_SUBSCRIPTION" \
-    --set environment_variables.SHARD=1 \
-    --set environment_variables.TOTAL_SHARDS=8 \
-    --set display_name="batch-extract-1-of-8"
+bash scripts/aml_submit.sh --total-shards 8 --compute big-gpu-cluster extract
 ```
-
-Edit `azureml/extract_job.yml` to set your compute cluster name and data paths
-before submitting.
 
 ### Collecting results
 
@@ -267,31 +259,8 @@ weather-extract evaluate \
 ### Submit a job array (Azure ML)
 
 ```bash
-bash scripts/aml_submit.sh \
-    --subscription "$AML_SUBSCRIPTION" \
-    --resource-group "$AML_RESOURCE_GROUP" \
-    --workspace "$AML_WORKSPACE" \
-    --total-shards 8 \
-    evaluate
+bash scripts/aml_submit.sh --total-shards 8 evaluate
 ```
-
-Or submit a single shard directly:
-
-```bash
-az ml job create \
-    --file azureml/evaluate_job.yml \
-    --workspace-name "$AML_WORKSPACE" \
-    --resource-group "$AML_RESOURCE_GROUP" \
-    --subscription "$AML_SUBSCRIPTION" \
-    --set environment_variables.SHARD=1 \
-    --set environment_variables.TOTAL_SHARDS=8 \
-    --set display_name="evaluate-1-of-8"
-```
-
-Edit `azureml/evaluate_job.yml` to set your compute cluster name and data paths.
-
-The script `scripts/azure_evaluate_array.sh` is provided for use with Azure Batch
-job arrays if you prefer that service instead of Azure ML.
 
 ### Aggregating shard results
 
@@ -316,11 +285,7 @@ print(f"Macro accuracy:   {statistics.mean(accuracies):.1%}")
 ### Submit the fine-tuning job (Azure ML)
 
 ```bash
-bash scripts/aml_submit.sh \
-    --subscription "$AML_SUBSCRIPTION" \
-    --resource-group "$AML_RESOURCE_GROUP" \
-    --workspace "$AML_WORKSPACE" \
-    finetune
+bash scripts/aml_submit.sh finetune
 ```
 
 Override training hyper-parameters with `--set`:

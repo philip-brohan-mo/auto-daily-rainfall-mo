@@ -1,54 +1,57 @@
 #!/usr/bin/env bash
 # aml_submit.sh — Submit weather-extract jobs to an Azure ML workspace.
 #
-# ── Usage ─────────────────────────────────────────────────────────────────────
-#   bash scripts/aml_submit.sh --subscription SUB --resource-group RG \
-#                              --workspace WS {extract|evaluate|finetune}
+# ── Configuration file ────────────────────────────────────────────────────────
+#   Copy azureml/config.env.example to azureml/config.env and fill in your
+#   workspace coordinates and data paths.  The script sources it automatically.
+#   CLI flags and environment variables override any value in config.env.
 #
-# ── Required ──────────────────────────────────────────────────────────────────
+# ── Usage ─────────────────────────────────────────────────────────────────────
+#   bash scripts/aml_submit.sh {extract|evaluate|finetune|env} [options]
+#
+# ── Options ───────────────────────────────────────────────────────────────────
 #   --subscription SUB      Azure subscription ID or name
 #   --resource-group RG     Azure resource group containing the workspace
 #   --workspace WS          Azure ML workspace name
-#
-# ── Options ───────────────────────────────────────────────────────────────────
-#   --total-shards N        Parallel shards for extract/evaluate (default: 8)
 #   --compute CLUSTER       Compute cluster name (default: gpu-cluster)
+#   --total-shards N        Parallel shards for extract/evaluate (default: 8)
 #   --help                  Show this message
 #
-# ── Environment variable alternatives ─────────────────────────────────────────
-#   Set AML_SUBSCRIPTION, AML_RESOURCE_GROUP, AML_WORKSPACE to avoid typing
-#   them on every invocation.
-#
 # ── Examples ──────────────────────────────────────────────────────────────────
-#   # Register the environment (once):
-#   bash scripts/aml_submit.sh --subscription abc123 \
-#       --resource-group my-rg --workspace my-ws env
+#   # First-time setup: copy and edit the config, then register the environment:
+#   cp azureml/config.env.example azureml/config.env
+#   # edit azureml/config.env
+#   bash scripts/aml_submit.sh env
 #
-#   # Submit 8 extract shards:
-#   bash scripts/aml_submit.sh --subscription abc123 \
-#       --resource-group my-rg --workspace my-ws \
-#       --total-shards 8 extract
+#   # Submit 8 extract shards (uses azureml/config.env):
+#   bash scripts/aml_submit.sh --total-shards 8 extract
 #
-#   # Submit 8 evaluate shards:
-#   bash scripts/aml_submit.sh --subscription abc123 \
-#       --resource-group my-rg --workspace my-ws \
-#       --total-shards 8 evaluate
-#
-#   # Submit a fine-tuning job:
-#   bash scripts/aml_submit.sh --subscription abc123 \
-#       --resource-group my-rg --workspace my-ws finetune
+#   # Override workspace on the command line:
+#   bash scripts/aml_submit.sh --workspace other-ws evaluate
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+CONFIG_FILE="$REPO_DIR/azureml/config.env"
+
+# ── Load config.env (if present) before applying CLI overrides ───────────────
+if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+fi
+
+# Apply defaults *after* sourcing so config.env values become the baseline.
 COMMAND=""
 TOTAL_SHARDS=8
 AML_COMPUTE="${AML_COMPUTE:-gpu-cluster}"
 AML_SUBSCRIPTION="${AML_SUBSCRIPTION:-}"
 AML_RESOURCE_GROUP="${AML_RESOURCE_GROUP:-}"
 AML_WORKSPACE="${AML_WORKSPACE:-}"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
+AML_DATASTORE_BASE="${AML_DATASTORE_BASE:-azureml://datastores/workspaceblobstore/paths}"
+AML_IMAGES_PATH="${AML_IMAGES_PATH:-Daily_rainfall_sample/images}"
+AML_TRANSCRIPTIONS_PATH="${AML_TRANSCRIPTIONS_PATH:-Daily_rainfall_sample/transcriptions}"
+AML_OUTPUTS_PATH="${AML_OUTPUTS_PATH:-outputs}"
 
 usage() {
     sed -n '2,/^set -/p' "$0" | grep '^#' | sed 's/^# \?//'
@@ -69,15 +72,27 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$COMMAND" ]] && { echo "Error: command required (extract|evaluate|finetune|env)" >&2; usage 1; }
-[[ -z "$AML_SUBSCRIPTION" ]]   && { echo "Error: --subscription required (or set AML_SUBSCRIPTION)"   >&2; exit 1; }
-[[ -z "$AML_RESOURCE_GROUP" ]] && { echo "Error: --resource-group required (or set AML_RESOURCE_GROUP)" >&2; exit 1; }
-[[ -z "$AML_WORKSPACE" ]]      && { echo "Error: --workspace required (or set AML_WORKSPACE)"           >&2; exit 1; }
+[[ -z "$AML_SUBSCRIPTION" ]]   && { echo "Error: AML_SUBSCRIPTION not set (use --subscription or azureml/config.env)"   >&2; exit 1; }
+[[ -z "$AML_RESOURCE_GROUP" ]] && { echo "Error: AML_RESOURCE_GROUP not set (use --resource-group or azureml/config.env)" >&2; exit 1; }
+[[ -z "$AML_WORKSPACE" ]]      && { echo "Error: AML_WORKSPACE not set (use --workspace or azureml/config.env)"           >&2; exit 1; }
+
+# Resolved datastore URIs
+IMAGES_URI="$AML_DATASTORE_BASE/$AML_IMAGES_PATH"
+TRANSCRIPTIONS_URI="$AML_DATASTORE_BASE/$AML_TRANSCRIPTIONS_PATH"
+OUTPUTS_URI="$AML_DATASTORE_BASE/$AML_OUTPUTS_PATH"
 
 AML_ARGS=(
     --workspace-name "$AML_WORKSPACE"
     --resource-group "$AML_RESOURCE_GROUP"
     --subscription   "$AML_SUBSCRIPTION"
 )
+
+echo "Workspace:  $AML_WORKSPACE  ($AML_RESOURCE_GROUP / $AML_SUBSCRIPTION)"
+echo "Compute:    $AML_COMPUTE"
+echo "Images:     $IMAGES_URI"
+[[ "$COMMAND" != "extract" ]] && echo "Transcript: $TRANSCRIPTIONS_URI"
+echo "Outputs:    $OUTPUTS_URI"
+echo
 
 case "$COMMAND" in
     env)
@@ -89,13 +104,15 @@ case "$COMMAND" in
         ;;
 
     extract)
-        echo "Submitting $TOTAL_SHARDS extract shards to workspace '$AML_WORKSPACE'..."
+        echo "Submitting $TOTAL_SHARDS extract shards..."
         for i in $(seq 1 "$TOTAL_SHARDS"); do
             echo "  Shard $i / $TOTAL_SHARDS ..."
             az ml job create \
                 --file "$REPO_DIR/azureml/extract_job.yml" \
                 "${AML_ARGS[@]}" \
                 --set compute="azureml:$AML_COMPUTE" \
+                --set inputs.images_dir.path="$IMAGES_URI" \
+                --set outputs.extractions.path="$OUTPUTS_URI/extractions" \
                 --set environment_variables.SHARD="$i" \
                 --set environment_variables.TOTAL_SHARDS="$TOTAL_SHARDS" \
                 --set display_name="batch-extract-${i}-of-${TOTAL_SHARDS}" \
@@ -105,13 +122,16 @@ case "$COMMAND" in
         ;;
 
     evaluate)
-        echo "Submitting $TOTAL_SHARDS evaluate shards to workspace '$AML_WORKSPACE'..."
+        echo "Submitting $TOTAL_SHARDS evaluate shards..."
         for i in $(seq 1 "$TOTAL_SHARDS"); do
             echo "  Shard $i / $TOTAL_SHARDS ..."
             az ml job create \
                 --file "$REPO_DIR/azureml/evaluate_job.yml" \
                 "${AML_ARGS[@]}" \
                 --set compute="azureml:$AML_COMPUTE" \
+                --set inputs.images_dir.path="$IMAGES_URI" \
+                --set inputs.transcriptions_dir.path="$TRANSCRIPTIONS_URI" \
+                --set outputs.results.path="$OUTPUTS_URI/eval" \
                 --set environment_variables.SHARD="$i" \
                 --set environment_variables.TOTAL_SHARDS="$TOTAL_SHARDS" \
                 --set display_name="evaluate-${i}-of-${TOTAL_SHARDS}" \
@@ -121,11 +141,14 @@ case "$COMMAND" in
         ;;
 
     finetune)
-        echo "Submitting finetune job to workspace '$AML_WORKSPACE'..."
+        echo "Submitting finetune job..."
         az ml job create \
             --file "$REPO_DIR/azureml/finetune_job.yml" \
             "${AML_ARGS[@]}" \
             --set compute="azureml:$AML_COMPUTE" \
+            --set inputs.images_dir.path="$IMAGES_URI" \
+            --set inputs.transcriptions_dir.path="$TRANSCRIPTIONS_URI" \
+            --set outputs.checkpoints.path="$OUTPUTS_URI/checkpoints" \
             --query name --output tsv
         echo "Finetune job submitted."
         ;;
