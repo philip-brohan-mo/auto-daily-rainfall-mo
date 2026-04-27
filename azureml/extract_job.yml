@@ -50,7 +50,7 @@ command: >-
   --shard $SHARD
   --total-shards $TOTAL_SHARDS
   --output-dir ${{outputs.extractions}}
-  ${EXTRACT_LIMIT:+--limit $EXTRACT_LIMIT}
+  $([ -n "$EXTRACT_LIMIT" ] && echo "--limit $EXTRACT_LIMIT")
 
 # ── Environment variables ─────────────────────────────────────────────────────
 environment_variables:
