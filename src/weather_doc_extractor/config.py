@@ -32,21 +32,35 @@ def _env_float(var: str, default: float) -> float:
 @dataclass
 class ProjectPaths:
     # Override via WEATHER_DATA_DIR / WEATHER_OUTPUT_DIR / WEATHER_MODELS_DIR
-    data_dir: Path = field(default_factory=lambda: _env_path("WEATHER_DATA_DIR", "data"))
-    raw_images_dir: Path = field(default_factory=lambda: _env_path("WEATHER_DATA_DIR", "data") / "raw_images")
-    annotations_dir: Path = field(default_factory=lambda: _env_path("WEATHER_DATA_DIR", "data") / "annotations")
-    outputs_dir: Path = field(default_factory=lambda: _env_path("WEATHER_OUTPUT_DIR", "outputs"))
-    models_dir: Path = field(default_factory=lambda: _env_path("WEATHER_MODELS_DIR", "models"))
+    data_dir: Path = field(
+        default_factory=lambda: _env_path("WEATHER_DATA_DIR", "data")
+    )
+    raw_images_dir: Path = field(
+        default_factory=lambda: _env_path("WEATHER_DATA_DIR", "data") / "raw_images"
+    )
+    annotations_dir: Path = field(
+        default_factory=lambda: _env_path("WEATHER_DATA_DIR", "data") / "annotations"
+    )
+    outputs_dir: Path = field(
+        default_factory=lambda: _env_path("WEATHER_OUTPUT_DIR", "outputs")
+    )
+    models_dir: Path = field(
+        default_factory=lambda: _env_path("WEATHER_MODELS_DIR", "models")
+    )
 
 
 @dataclass
 class IngestConfig:
     # Override via WEATHER_IMAGES_DIR / WEATHER_TRANSCRIPTIONS_DIR / WEATHER_INGEST_OUTPUT_DIR
     images_dir: Path = field(
-        default_factory=lambda: _env_path("WEATHER_IMAGES_DIR", "Daily_rainfall_sample/images")
+        default_factory=lambda: _env_path(
+            "WEATHER_IMAGES_DIR", "Daily_rainfall_sample/images"
+        )
     )
     transcriptions_dir: Path = field(
-        default_factory=lambda: _env_path("WEATHER_TRANSCRIPTIONS_DIR", "Daily_rainfall_sample/transcriptions")
+        default_factory=lambda: _env_path(
+            "WEATHER_TRANSCRIPTIONS_DIR", "Daily_rainfall_sample/transcriptions"
+        )
     )
     output_dir: Path = field(
         default_factory=lambda: _env_path("WEATHER_INGEST_OUTPUT_DIR", "data/dataset")
@@ -56,10 +70,15 @@ class IngestConfig:
 @dataclass
 class ModelConfig:
     # Override via WEATHER_MODEL / WEATHER_MAX_NEW_TOKENS / WEATHER_DEVICE
+    # Short preset names ("smolvlm", "granite") are resolved to full HF IDs.
     model_name: str = field(
-        default_factory=lambda: _env_str("WEATHER_MODEL", "HuggingFaceTB/SmolVLM-500M-Instruct")
+        default_factory=lambda: MODEL_PRESETS.get(
+            (v := _env_str("WEATHER_MODEL", "HuggingFaceTB/SmolVLM-500M-Instruct")), v
+        )
     )
-    max_new_tokens: int = field(default_factory=lambda: _env_int("WEATHER_MAX_NEW_TOKENS", 2048))
+    max_new_tokens: int = field(
+        default_factory=lambda: _env_int("WEATHER_MAX_NEW_TOKENS", 2048)
+    )
     temperature: float = 0.0
     device: str = field(default_factory=lambda: _env_str("WEATHER_DEVICE", "auto"))
 
@@ -68,9 +87,13 @@ class ModelConfig:
 class TrainingConfig:
     # Override via WEATHER_TRAINING_OUTPUT_DIR / WEATHER_EPOCHS / WEATHER_BATCH_SIZE
     output_dir: Path = field(
-        default_factory=lambda: _env_path("WEATHER_TRAINING_OUTPUT_DIR", "outputs/checkpoints")
+        default_factory=lambda: _env_path(
+            "WEATHER_TRAINING_OUTPUT_DIR", "outputs/checkpoints"
+        )
     )
-    learning_rate: float = field(default_factory=lambda: _env_float("WEATHER_LEARNING_RATE", 2e-4))
+    learning_rate: float = field(
+        default_factory=lambda: _env_float("WEATHER_LEARNING_RATE", 2e-4)
+    )
     epochs: int = field(default_factory=lambda: _env_int("WEATHER_EPOCHS", 3))
     batch_size: int = field(default_factory=lambda: _env_int("WEATHER_BATCH_SIZE", 1))
     gradient_accumulation_steps: int = field(
@@ -84,7 +107,9 @@ class TrainingConfig:
     # None → "all-linear" (PEFT selects all linear layers automatically)
     lora_target_modules: list[str] | None = None
     # Experiment tracking backend: "none", "wandb", "tensorboard"
-    report_to: str = field(default_factory=lambda: _env_str("WEATHER_REPORT_TO", "none"))
+    report_to: str = field(
+        default_factory=lambda: _env_str("WEATHER_REPORT_TO", "none")
+    )
     extra_args: dict[str, str] = field(default_factory=dict)
 
 
