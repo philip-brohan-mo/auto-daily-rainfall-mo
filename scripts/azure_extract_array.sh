@@ -55,6 +55,7 @@ EXTRACT_OUTPUT_DIR="${EXTRACT_OUTPUT_DIR:-$WEATHER_OUTPUT_DIR/extractions}"
 
 echo "[extract_array] Task $AZ_BATCH_TASK_ID → shard $SHARD/$TOTAL_SHARDS"
 echo "[extract_array] Output directory: $EXTRACT_OUTPUT_DIR"
+[[ -n "${EXTRACT_LIMIT:-}" ]] && echo "[extract_array] Limit: $EXTRACT_LIMIT images"
 
 # ── Activate environment ──────────────────────────────────────────────────────
 # shellcheck source=/dev/null
@@ -68,6 +69,7 @@ weather-extract batch-extract \
     --shard "$SHARD" \
     --total-shards "$TOTAL_SHARDS" \
     --output-dir "$EXTRACT_OUTPUT_DIR" \
-    ${WEATHER_MODEL:+--model "$WEATHER_MODEL"}
+    ${WEATHER_MODEL:+--model "$WEATHER_MODEL"} \
+    ${EXTRACT_LIMIT:+--limit "$EXTRACT_LIMIT"}
 
 echo "[extract_array] Shard $SHARD complete. Results in: $EXTRACT_OUTPUT_DIR"

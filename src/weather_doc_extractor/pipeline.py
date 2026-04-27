@@ -120,6 +120,7 @@ def run_batch_extract(
     output_dir: Path,
     shard: int | None = None,
     total_shards: int | None = None,
+    limit: int | None = None,
 ) -> dict[str, object]:
     """Run inference on every image in the configured images directory.
 
@@ -135,6 +136,9 @@ def run_batch_extract(
         When both are provided, only the ``shard``-th (1-based) of
         ``total_shards`` equal slices of the image list is processed.
         Allows parallel execution via an Azure Batch job array.
+    limit:
+        If set, process only the first *limit* images (after sharding).
+        Useful for quick smoke tests.
 
     Returns
     -------
@@ -148,6 +152,8 @@ def run_batch_extract(
     records = scan_records(config.ingest.images_dir, config.ingest.transcriptions_dir)
     if shard is not None and total_shards is not None:
         records = _shard_list(records, shard, total_shards)
+    if limit is not None:
+        records = records[:limit]
 
     output_dir.mkdir(parents=True, exist_ok=True)
     succeeded = 0
@@ -157,7 +163,11 @@ def run_batch_extract(
         print(f"  [{i}/{len(records)}] {record.stem} …", flush=True)
         grid, raw_text = extract_grid(record.image_path, config.model)
         if grid is not None:
-            result = {"stem": record.stem, "parse_failed": False, "grid": grid.to_dict()}
+            result = {
+                "stem": record.stem,
+                "parse_failed": False,
+                "grid": grid.to_dict(),
+            }
             succeeded += 1
         else:
             result = {"stem": record.stem, "parse_failed": True, "raw_text": raw_text}

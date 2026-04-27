@@ -263,10 +263,11 @@ def run(argv: list[str] | None = None) -> int:
 
     if command == "batch-extract":
         # Usage: batch-extract [--model X] [--output-dir PATH]
-        #                      [--shard N --total-shards M]
+        #                      [--shard N --total-shards M] [--limit N]
         output_dir: Path = config.paths.outputs_dir / "extractions"
         shard: int | None = None
         total_shards: int | None = None
+        limit: int | None = None
         remaining = _parse_model_flag(list(args[1:]), config)
         while remaining:
             flag = remaining.pop(0)
@@ -276,11 +277,15 @@ def run(argv: list[str] | None = None) -> int:
                 shard = int(remaining.pop(0))
             elif flag == "--total-shards" and remaining:
                 total_shards = int(remaining.pop(0))
+            elif flag == "--limit" and remaining:
+                limit = int(remaining.pop(0))
         if (shard is None) != (total_shards is None):
             print("--shard and --total-shards must be used together", file=sys.stderr)
             return 1
         print(f"Batch extraction with model: {config.model.model_name}")
         print(f"Writing results to: {output_dir}")
+        if limit:
+            print(f"Limiting to {limit} images")
         if shard is not None:
             print(f"Shard {shard}/{total_shards}")
         summary = run_batch_extract(
@@ -288,6 +293,7 @@ def run(argv: list[str] | None = None) -> int:
             output_dir=output_dir,
             shard=shard,
             total_shards=total_shards,
+            limit=limit,
         )
         print(json.dumps(summary, indent=2, default=str))
         return 0

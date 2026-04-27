@@ -42,6 +42,7 @@ outputs:
 # ── Command ───────────────────────────────────────────────────────────────────
 # SHARD and TOTAL_SHARDS are set via environment_variables below and can be
 # overridden per-submission with: --set environment_variables.SHARD=<n>
+# Add --set environment_variables.EXTRACT_LIMIT=5 to process only 5 images.
 command: >-
   pip install -e . --quiet &&
   WEATHER_IMAGES_DIR=${{inputs.images_dir}}
@@ -49,12 +50,16 @@ command: >-
   --shard $SHARD
   --total-shards $TOTAL_SHARDS
   --output-dir ${{outputs.extractions}}
+  ${EXTRACT_LIMIT:+--limit $EXTRACT_LIMIT}
 
 # ── Environment variables ─────────────────────────────────────────────────────
 environment_variables:
   # Shard index (1-based) and total shards — overridden by aml_submit.sh.
   SHARD: "1"
   TOTAL_SHARDS: "1"
+
+  # Uncomment to process only N images per shard (useful for smoke tests).
+  # EXTRACT_LIMIT: "5"
 
   # Model to use.  "smolvlm" resolves to HuggingFaceTB/SmolVLM-500M-Instruct.
   WEATHER_MODEL: smolvlm
