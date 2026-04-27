@@ -67,43 +67,55 @@ fi
 
 [[ -z "$AML_SUBSCRIPTION" ]]   && { echo "Error: AML_SUBSCRIPTION not set" >&2; exit 1; }
 [[ -z "$AML_RESOURCE_GROUP" ]] && { echo "Error: AML_RESOURCE_GROUP not set" >&2; exit 1; }
-[[ -z "$AML_WORKSPACE" ]]      && { echo "Error: AML_WORKSPACE not set" >&2; exit 1; }
+if ! $DRY_RUN; then
+    [[ -z "$AML_SUBSCRIPTION" ]]   && { echo "Error: AML_SUBSCRIPTION not set" >&2; exit 1; }
+    [[ -z "$AML_RESOURCE_GROUP" ]] && { echo "Error: AML_RESOURCE_GROUP not set" >&2; exit 1; }
+    [[ -z "$AML_WORKSPACE" ]]      && { echo "Error: AML_WORKSPACE not set" >&2; exit 1; }
+fi
 
-# ── Resolve storage account and container from the datastore ─────────────────
-DATASTORE_NAME="$(echo "$AML_DATASTORE_BASE" | sed 's|azureml://datastores/||;s|/paths.*||')"
-echo "Resolving datastore '$DATASTORE_NAME' in workspace '$AML_WORKSPACE'..."
-DATASTORE_JSON="$(az ml datastore show \
-    --name "$DATASTORE_NAME" \
-    --workspace-name "$AML_WORKSPACE" \
-    --resource-group "$AML_RESOURCE_GROUP" \
-    --subscription "$AML_SUBSCRIPTION" \
-    --output json)"
+DATASTORE_NAME="$(echo "$AML_DATASTORE_BASE" | sed 's|.*/datastores/||;s|/paths.*||')"
+STORAGE_ACCOUNT=""
+CONTAINER=""
 
-STORAGE_ACCOUNT="$(echo "$DATASTORE_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['account_name'])")"
-CONTAINER="$(echo "$DATASTORE_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['container_name'])")"
-echo "Storage account: $STORAGE_ACCOUNT  container: $CONTAINER"
-echo
+# ── Resolve storage account and container (skipped in dry-run) ────────────────
+if $DRY_RUN; then
+    echo "[dry-run] Would resolve datastore '$DATASTORE_NAME' in workspace '$AML_WORKSPACE'"
+    echo
+else
+    echo "Resolving datastore '$DATASTORE_NAME' in workspace '$AML_WORKSPACE'..."
+    DATASTORE_JSON="$(az ml datastore show \
+        --name "$DATASTORE_NAME" \
+        --workspace-name "$AML_WORKSPACE" \
+        --resource-group "$AML_RESOURCE_GROUP" \
+        --subscription "$AML_SUBSCRIPTION" \
+        --output json)"
+    STORAGE_ACCOUNT="$(echo "$DATASTORE_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['account_name'])")"
+    CONTAINER="$(echo "$DATASTORE_JSON" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['container_name'])")"
+    echo "Storage account: $STORAGE_ACCOUNT  container: $CONTAINER"
+    echo
+fi
 
 # ── Download helper ───────────────────────────────────────────────────────────
 do_download() {
     local src_path="$1"
     local dst="$2"
     mkdir -p "$dst"
-    echo "Downloading https://${STORAGE_ACCOUNT}.blob.core.windows.net/${CONTAINER}/${src_path}"
-    echo "         → $dst"
-    local cmd=(
-        az storage blob download-batch
-        --account-name "$STORAGE_ACCOUNT"
-        --auth-mode login
-        --source "$CONTAINER"
-        --source-path "$src_path/*"
-        --destination "$dst"
-        --overwrite true
-    )
     if $DRY_RUN; then
-        echo "[dry-run] ${cmd[*]}"
+        echo "[dry-run] az storage blob download-batch \\"
+        echo "    --account-name <resolved-at-runtime> --auth-mode login \\"
+        echo "    --source <container> --source-path $src_path/* \\"
+        echo "    --destination $dst --overwrite true"
+        echo "    (downloads from: $AML_DATASTORE_BASE/$src_path)"
     else
-        "${cmd[@]}"
+        echo "Downloading https://${STORAGE_ACCOUNT}.blob.core.windows.net/${CONTAINER}/${src_path}"
+        echo "         → $dst"
+        az storage blob download-batch \
+            --account-name "$STORAGE_ACCOUNT" \
+            --auth-mode login \
+            --source "$CONTAINER" \
+            --source-path "$src_path/*" \
+            --destination "$dst" \
+            --overwrite true
         echo "Done."
     fi
     echo
