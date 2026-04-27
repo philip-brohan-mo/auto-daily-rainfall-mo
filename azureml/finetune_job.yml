@@ -17,11 +17,33 @@ environment: azureml:weather-doc-extractor@latest
 # ── Code ──────────────────────────────────────────────────────────────────────
 code: ..
 
+# ── Inputs ────────────────────────────────────────────────────────────────────
+inputs:
+  images_dir:
+    type: uri_folder
+    path: azureml://datastores/workspaceblobstore/paths/Daily_rainfall_sample/images
+    mode: ro_mount
+  transcriptions_dir:
+    type: uri_folder
+    path: azureml://datastores/workspaceblobstore/paths/Daily_rainfall_sample/transcriptions
+    mode: ro_mount
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+# LoRA adapter checkpoints are written here and uploaded to the workspace
+# datastore automatically when the job completes.
+outputs:
+  checkpoints:
+    type: uri_folder
+    mode: rw_mount
+
 # ── Command ───────────────────────────────────────────────────────────────────
 # Uses accelerate for multi-GPU.  For single-GPU, replace the accelerate launch
 # line with: weather-extract finetune
 command: >-
   pip install -e . --quiet &&
+  WEATHER_IMAGES_DIR=${{inputs.images_dir}}
+  WEATHER_TRANSCRIPTIONS_DIR=${{inputs.transcriptions_dir}}
+  WEATHER_TRAINING_OUTPUT_DIR=${{outputs.checkpoints}}
   accelerate launch
   --config_file scripts/accelerate_config.yaml
   -m weather_doc_extractor.cli
@@ -29,10 +51,6 @@ command: >-
 
 # ── Environment variables ─────────────────────────────────────────────────────
 environment_variables:
-  WEATHER_IMAGES_DIR: /mnt/blob/Daily_rainfall_sample/images
-  WEATHER_TRANSCRIPTIONS_DIR: /mnt/blob/Daily_rainfall_sample/transcriptions
-  WEATHER_TRAINING_OUTPUT_DIR: /mnt/blob/outputs/checkpoints
-
   WEATHER_MODEL: smolvlm
   WEATHER_EPOCHS: "3"
   WEATHER_BATCH_SIZE: "1"

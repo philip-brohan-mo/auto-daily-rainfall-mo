@@ -21,30 +21,40 @@ environment: azureml:weather-doc-extractor@latest
 # Uploads the repository root to an Azure ML snapshot.
 code: ..
 
+# ── Inputs ────────────────────────────────────────────────────────────────────
+# Point these at your Azure ML datastore paths (or leave as-is and override
+# with --set inputs.images_dir.path=azureml://datastores/... on submission).
+inputs:
+  images_dir:
+    type: uri_folder
+    path: azureml://datastores/workspaceblobstore/paths/Daily_rainfall_sample/images
+    mode: ro_mount
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+# Azure ML mounts this as a writable directory backed by the workspace default
+# datastore.  Results are accessible via Studio → job → Outputs + logs tab,
+# and can be downloaded or used as inputs to subsequent jobs.
+outputs:
+  extractions:
+    type: uri_folder
+    mode: rw_mount
+
 # ── Command ───────────────────────────────────────────────────────────────────
-# Installs the local package, then runs one shard of batch-extract.
 # SHARD and TOTAL_SHARDS are set via environment_variables below and can be
 # overridden per-submission with: --set environment_variables.SHARD=<n>
 command: >-
   pip install -e . --quiet &&
+  WEATHER_IMAGES_DIR=${{inputs.images_dir}}
   weather-extract batch-extract
   --shard $SHARD
   --total-shards $TOTAL_SHARDS
-  --output-dir $EXTRACT_OUTPUT_DIR
+  --output-dir ${{outputs.extractions}}
 
 # ── Environment variables ─────────────────────────────────────────────────────
-# Edit paths to match your Azure ML datastore mount points or blob paths.
 environment_variables:
   # Shard index (1-based) and total shards — overridden by aml_submit.sh.
   SHARD: "1"
   TOTAL_SHARDS: "1"
-
-  # Path to image files on the compute node (e.g. a mounted Azure ML datastore).
-  WEATHER_IMAGES_DIR: /mnt/blob/Daily_rainfall_sample/images
-
-  # Root output directory; extracted JSON files go to $EXTRACT_OUTPUT_DIR.
-  WEATHER_OUTPUT_DIR: /mnt/blob/outputs
-  EXTRACT_OUTPUT_DIR: /mnt/blob/outputs/extractions
 
   # Model to use.  "smolvlm" resolves to HuggingFaceTB/SmolVLM-500M-Instruct.
   WEATHER_MODEL: smolvlm

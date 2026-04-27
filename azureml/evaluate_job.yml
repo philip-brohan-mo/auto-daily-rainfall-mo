@@ -16,22 +16,39 @@ environment: azureml:weather-doc-extractor@latest
 # ── Code ──────────────────────────────────────────────────────────────────────
 code: ..
 
+# ── Inputs ────────────────────────────────────────────────────────────────────
+inputs:
+  images_dir:
+    type: uri_folder
+    path: azureml://datastores/workspaceblobstore/paths/Daily_rainfall_sample/images
+    mode: ro_mount
+  transcriptions_dir:
+    type: uri_folder
+    path: azureml://datastores/workspaceblobstore/paths/Daily_rainfall_sample/transcriptions
+    mode: ro_mount
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+# Each shard writes one JSON file here.  After all shards finish, this
+# directory contains shard_1_of_N.json … shard_N_of_N.json ready to aggregate.
+outputs:
+  results:
+    type: uri_folder
+    mode: rw_mount
+
 # ── Command ───────────────────────────────────────────────────────────────────
 command: >-
   pip install -e . --quiet &&
+  WEATHER_IMAGES_DIR=${{inputs.images_dir}}
+  WEATHER_TRANSCRIPTIONS_DIR=${{inputs.transcriptions_dir}}
   weather-extract evaluate
   --shard $SHARD
   --total-shards $TOTAL_SHARDS
-  --output-file $WEATHER_OUTPUT_DIR/shard_${SHARD}_of_${TOTAL_SHARDS}.json
+  --output-file ${{outputs.results}}/shard_${SHARD}_of_${TOTAL_SHARDS}.json
 
 # ── Environment variables ─────────────────────────────────────────────────────
 environment_variables:
   SHARD: "1"
   TOTAL_SHARDS: "1"
-
-  WEATHER_IMAGES_DIR: /mnt/blob/Daily_rainfall_sample/images
-  WEATHER_TRANSCRIPTIONS_DIR: /mnt/blob/Daily_rainfall_sample/transcriptions
-  WEATHER_OUTPUT_DIR: /mnt/blob/outputs/eval
 
   WEATHER_MODEL: smolvlm
 

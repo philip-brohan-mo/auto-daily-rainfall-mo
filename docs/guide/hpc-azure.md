@@ -123,38 +123,47 @@ submission with `--set environment_variables.VAR=value`.
 
 ---
 
-## Data paths
+## Data paths and outputs
 
-Edit the `environment_variables` block in the relevant `azureml/*.yml` job file
-to point at your data.  The paths must be accessible on the compute node —
-typically a mounted Azure ML datastore or a blob container mounted via blobfuse2.
+Each job YAML in `azureml/` declares typed `inputs` and `outputs`:
 
-### Mounting via blobfuse2 (optional)
+- **Inputs** (`type: uri_folder`, `mode: ro_mount`) — Azure ML mounts your
+  datastore paths read-only on the compute node.  The default paths point at
+  `workspaceblobstore` (the storage account that every workspace creates
+  automatically).  Override them with `--set`:
 
-If you prefer to mount a Blob Storage container directly rather than using an
-Azure ML datastore:
+  ```bash
+  az ml job create --file azureml/extract_job.yml ... \
+      --set inputs.images_dir.path="azureml://datastores/mystore/paths/images"
+  ```
+
+- **Outputs** (`type: uri_folder`, `mode: rw_mount`) — Azure ML mounts a
+  writable directory backed by `workspaceblobstore`.  When the job finishes,
+  the files are **automatically uploaded and persisted**.  You can access them
+  via:
+  - **Studio UI**: job → **Outputs + logs** tab
+  - **Azure CLI**: `az ml job download --name <job-id> --output-name <name> -w <ws> -g <rg>`
+  - As inputs to a subsequent job
+
+So you don't need to configure blobfuse2 or worry about ephemeral compute disk
+— results are safely stored in the workspace datastore automatically.
+
+### Changing the datastore
+
+The default `workspaceblobstore` is created automatically with every workspace.
+To use a different registered datastore:
 
 ```bash
-# Install blobfuse2 on Ubuntu 22.04
-wget https://packages.microsoft.com/repos/azure-cli/pool/main/b/blobfuse2/blobfuse2_2.3.0_ubuntu22.04_amd64.deb
-sudo dpkg -i blobfuse2_2.3.0_ubuntu22.04_amd64.deb
-
-# Mount the container
-sudo mkdir -p /mnt/blob
-blobfuse2 mount /mnt/blob \
-    --container-name <container> \
-    --account-name <storage-account> \
-    --use-adls=false \
-    --tmp-path=/mnt/blobfuse-cache
+--set inputs.images_dir.path="azureml://datastores/<datastore-name>/paths/<path>"
 ```
 
-Then set paths in `azureml/extract_job.yml` (or via `--set`):
+### Mounting via blobfuse2 (advanced)
 
-```bash
---set environment_variables.WEATHER_IMAGES_DIR=/mnt/blob/Daily_rainfall_sample/images
---set environment_variables.WEATHER_OUTPUT_DIR=/mnt/blob/outputs
---set environment_variables.HF_HOME=/mnt/blob/hf_cache
-```
+If you need to access data that is not in a registered datastore, you can mount
+a Blob Storage container directly using blobfuse2 and pass the mount path as
+an environment variable override.  See the
+[blobfuse2 documentation](https://github.com/Azure/azure-storage-fuse) for
+installation and mount instructions.
 
 ---
 
