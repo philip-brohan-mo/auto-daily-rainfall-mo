@@ -50,7 +50,10 @@ def detect_model_family(model_name: str) -> str:
     adapter_cfg = Path(model_name) / "adapter_config.json"
     if adapter_cfg.exists():
         import json as _json
-        name = _json.loads(adapter_cfg.read_text()).get("base_model_name_or_path", model_name)
+
+        name = _json.loads(adapter_cfg.read_text()).get(
+            "base_model_name_or_path", model_name
+        )
 
     lower = name.lower()
     for family, patterns in _FAMILY_PATTERNS:
@@ -266,8 +269,7 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         from transformers import AutoModelForImageTextToText, AutoProcessor
     except ImportError as exc:
         raise ImportError(
-            "Install the 'train' extras to run inference: "
-            "pip install -e '.[train]'"
+            "Install the 'train' extras to run inference: " "pip install -e '.[train]'"
         ) from exc
 
     if _is_adapter_path(config.model_name):
@@ -279,7 +281,9 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         adapter_cfg = _json.loads((adapter_dir / "adapter_config.json").read_text())
         base_model_name = adapter_cfg["base_model_name_or_path"]
 
-        processor = AutoProcessor.from_pretrained(base_model_name, trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained(
+            base_model_name, trust_remote_code=True
+        )
         base = AutoModelForImageTextToText.from_pretrained(
             base_model_name,
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
@@ -309,6 +313,9 @@ def extract_grid(
 ) -> tuple[DailyRainfallGrid | None, str]:
     """Run the configured VLM over *image_path* and return ``(grid, raw_text)``.
 
+    Loads the model and processor on every call.  When processing many images,
+    use :func:`extract_grid_with_model` to load once and reuse.
+
     *grid* is ``None`` when the model response cannot be parsed.
 
     Parameters
@@ -319,17 +326,46 @@ def extract_grid(
         :class:`~weather_doc_extractor.config.ModelConfig` controlling which
         model to load and its generation parameters.
     """
+    processor, model = _load_model_and_processor(config)
+    family = detect_model_family(config.model_name)
+    return extract_grid_with_model(image_path, config, processor, model, family)
+
+
+def extract_grid_with_model(
+    image_path: Path,
+    config: ModelConfig,
+    processor: Any,
+    model: Any,
+    family: str,
+) -> tuple[DailyRainfallGrid | None, str]:
+    """Run inference using an already-loaded *model* and *processor*.
+
+    Use this in batch loops to avoid reloading weights for every image.
+    Obtain *processor*, *model*, and *family* once via::
+
+        processor, model = _load_model_and_processor(config)
+        family = detect_model_family(config.model_name)
+
+    Parameters
+    ----------
+    image_path:
+        Path to the document image.
+    config:
+        Model generation parameters (``max_new_tokens``, ``temperature``).
+    processor:
+        HuggingFace processor already loaded for this model.
+    model:
+        HuggingFace model already loaded and on the target device.
+    family:
+        Model family string from :func:`detect_model_family`.
+    """
     try:
         import torch
         from PIL import Image as PILImage
     except ImportError as exc:
         raise ImportError(
-            "Install the 'train' extras to run inference: "
-            "pip install -e '.[train]'"
+            "Install the 'train' extras to run inference: " "pip install -e '.[train]'"
         ) from exc
-
-    processor, model = _load_model_and_processor(config)
-    family = detect_model_family(config.model_name)
 
     image = PILImage.open(image_path).convert("RGB")
     messages = build_messages(image_path, model_family=family)
@@ -343,8 +379,6 @@ def extract_grid(
         generate_kwargs["temperature"] = config.temperature
 
     if family == "granite":
-        # Granite's processor resolves the image URL inside apply_chat_template
-        # and returns tokenised tensors directly.
         inputs = processor.apply_chat_template(
             messages,
             add_generation_prompt=True,
@@ -353,8 +387,6 @@ def extract_grid(
             return_tensors="pt",
         ).to(model.device)
     else:
-        # SmolVLM / generic: two-step — template produces a text prompt,
-        # then the processor combines it with the PIL image.
         text_prompt: str = processor.apply_chat_template(
             messages,
             tokenize=False,
@@ -370,7 +402,6 @@ def extract_grid(
     with torch.inference_mode():
         output_ids = model.generate(**inputs, **generate_kwargs)
 
-    # Decode only the newly generated tokens
     input_len = inputs["input_ids"].shape[1]
     raw_text: str = processor.batch_decode(
         output_ids[:, input_len:],

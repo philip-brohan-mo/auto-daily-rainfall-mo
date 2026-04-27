@@ -145,7 +145,11 @@ def run_batch_extract(
     dict
         Summary with keys ``total``, ``succeeded``, ``failed``, ``output_dir``.
     """
-    from weather_doc_extractor.inference import extract_grid
+    from weather_doc_extractor.inference import (
+        _load_model_and_processor,
+        detect_model_family,
+        extract_grid_with_model,
+    )
 
     import json
 
@@ -159,9 +163,15 @@ def run_batch_extract(
     succeeded = 0
     failed = 0
 
+    print(f"Loading model {config.model.model_name} …", flush=True)
+    processor, model = _load_model_and_processor(config.model)
+    family = detect_model_family(config.model.model_name)
+
     for i, record in enumerate(records, 1):
         print(f"  [{i}/{len(records)}] {record.stem} …", flush=True)
-        grid, raw_text = extract_grid(record.image_path, config.model)
+        grid, raw_text = extract_grid_with_model(
+            record.image_path, config.model, processor, model, family
+        )
         if grid is not None:
             result = {
                 "stem": record.stem,
