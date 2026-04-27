@@ -15,6 +15,8 @@
 #   --workspace WS          Azure ML workspace name
 #   --compute CLUSTER       Compute cluster name (default: gpu-cluster)
 #   --total-shards N        Parallel shards for extract/evaluate (default: 8)
+#   --limit N               Process only N images per shard (for smoke tests);
+#                           also defaults --total-shards to 1
 #   --help                  Show this message
 #
 # ── Examples ──────────────────────────────────────────────────────────────────
@@ -25,6 +27,9 @@
 #
 #   # Submit 8 extract shards (uses azureml/config.env):
 #   bash scripts/aml_submit.sh --total-shards 8 extract
+#
+#   # Quick smoke test — 1 shard, 5 images:
+#   bash scripts/aml_submit.sh --limit 5 extract
 #
 #   # Override workspace on the command line:
 #   bash scripts/aml_submit.sh --workspace other-ws evaluate
@@ -44,6 +49,7 @@ fi
 # Apply defaults *after* sourcing so config.env values become the baseline.
 COMMAND=""
 TOTAL_SHARDS=8
+EXTRACT_LIMIT=""
 AML_COMPUTE="${AML_COMPUTE:-gpu-cluster}"
 AML_SUBSCRIPTION="${AML_SUBSCRIPTION:-}"
 AML_RESOURCE_GROUP="${AML_RESOURCE_GROUP:-}"
@@ -64,6 +70,7 @@ while [[ $# -gt 0 ]]; do
         --resource-group)  AML_RESOURCE_GROUP="$2";  shift 2 ;;
         --workspace)       AML_WORKSPACE="$2";        shift 2 ;;
         --total-shards)    TOTAL_SHARDS="$2";         shift 2 ;;
+        --limit)           EXTRACT_LIMIT="$2";        shift 2 ;;
         --compute)         AML_COMPUTE="$2";          shift 2 ;;
         --help|-h)         usage 0 ;;
         extract|evaluate|finetune|env) COMMAND="$1"; shift ;;
@@ -75,6 +82,9 @@ done
 [[ -z "$AML_SUBSCRIPTION" ]]   && { echo "Error: AML_SUBSCRIPTION not set (use --subscription or azureml/config.env)"   >&2; exit 1; }
 [[ -z "$AML_RESOURCE_GROUP" ]] && { echo "Error: AML_RESOURCE_GROUP not set (use --resource-group or azureml/config.env)" >&2; exit 1; }
 [[ -z "$AML_WORKSPACE" ]]      && { echo "Error: AML_WORKSPACE not set (use --workspace or azureml/config.env)"           >&2; exit 1; }
+
+# When --limit is set and --total-shards was not explicitly specified, default to 1 shard.
+[[ -n "$EXTRACT_LIMIT" && "$TOTAL_SHARDS" -eq 8 ]] && TOTAL_SHARDS=1
 
 # Resolved datastore URIs
 IMAGES_URI="$AML_DATASTORE_BASE/$AML_IMAGES_PATH"
@@ -104,7 +114,7 @@ case "$COMMAND" in
         ;;
 
     extract)
-        echo "Submitting $TOTAL_SHARDS extract shards..."
+        echo "Submitting $TOTAL_SHARDS extract shard(s)${EXTRACT_LIMIT:+ (limit: $EXTRACT_LIMIT images each)}..."
         for i in $(seq 1 "$TOTAL_SHARDS"); do
             echo "  Shard $i / $TOTAL_SHARDS ..."
             az ml job create \
@@ -115,10 +125,11 @@ case "$COMMAND" in
                 --set outputs.extractions.path="$OUTPUTS_URI/extractions" \
                 --set environment_variables.SHARD="$i" \
                 --set environment_variables.TOTAL_SHARDS="$TOTAL_SHARDS" \
+                ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
                 --set display_name="batch-extract-${i}-of-${TOTAL_SHARDS}" \
                 --query name --output tsv
         done
-        echo "Submitted $TOTAL_SHARDS extract jobs."
+        echo "Submitted $TOTAL_SHARDS extract job(s)."
         ;;
 
     evaluate)
