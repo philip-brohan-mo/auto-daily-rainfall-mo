@@ -46,11 +46,8 @@ outputs:
 command: >-
   pip install -e . --quiet &&
   WEATHER_IMAGES_DIR=${{inputs.images_dir}}
-  weather-extract batch-extract
-  --shard $SHARD
-  --total-shards $TOTAL_SHARDS
-  --output-dir ${{outputs.extractions}}
-  $([ -n "$EXTRACT_LIMIT" ] && echo "--limit $EXTRACT_LIMIT")
+  OUTPUT_DIR=${{outputs.extractions}}
+  bash scripts/run_extract.sh
 
 # ── Environment variables ─────────────────────────────────────────────────────
 environment_variables:
