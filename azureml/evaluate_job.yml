@@ -1,0 +1,38 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+display_name: evaluate
+experiment_name: weather-doc-extractor
+description: >
+  Evaluate one shard of paired image/transcription records and write per-shard
+  JSON results.  Submit N copies of this job via scripts/aml_submit.sh, then
+  aggregate the resulting shard_*_of_*.json files to get overall metrics.
+
+# ── Compute ───────────────────────────────────────────────────────────────────
+compute: azureml:gpu-cluster
+
+# ── Environment ───────────────────────────────────────────────────────────────
+environment: azureml:weather-doc-extractor@latest
+
+# ── Code ──────────────────────────────────────────────────────────────────────
+code: ..
+
+# ── Command ───────────────────────────────────────────────────────────────────
+command: >-
+  pip install -e . --quiet &&
+  weather-extract evaluate
+  --shard $SHARD
+  --total-shards $TOTAL_SHARDS
+  --output-file $WEATHER_OUTPUT_DIR/shard_${SHARD}_of_${TOTAL_SHARDS}.json
+
+# ── Environment variables ─────────────────────────────────────────────────────
+environment_variables:
+  SHARD: "1"
+  TOTAL_SHARDS: "1"
+
+  WEATHER_IMAGES_DIR: /mnt/blob/Daily_rainfall_sample/images
+  WEATHER_TRANSCRIPTIONS_DIR: /mnt/blob/Daily_rainfall_sample/transcriptions
+  WEATHER_OUTPUT_DIR: /mnt/blob/outputs/eval
+
+  WEATHER_MODEL: smolvlm
+
+  # HF_HOME: /mnt/blob/hf_cache

@@ -1,8 +1,8 @@
-# HPC and Azure Batch
+# HPC and Azure ML
 
 This guide covers running the weather document extraction pipeline at scale on
-Microsoft Azure, using Azure Batch for parallel evaluation and GPU-accelerated
-fine-tuning.
+Microsoft Azure, using Azure ML workspaces for parallel evaluation and
+GPU-accelerated fine-tuning.
 
 ## Overview
 
@@ -15,6 +15,82 @@ The pipeline has three compute-intensive stages suited to HPC:
 | `finetune` | Single training run, benefits from multi-GPU | GPU node (multi-GPU) |
 
 ---
+
+## Prerequisites
+
+1. **Azure CLI** with the **ML extension**:
+
+    ```bash
+    az extension add -n ml
+    az login
+    ```
+
+2. **Workspace identifiers** — you need three values:
+
+    | Value | Where to find it |
+    |-------|-----------------|
+    | Subscription ID | `az account list --query "[].{name:name,id:id}" -o table` |
+    | Resource group | Azure ML Studio → workspace overview |
+    | Workspace name | Azure ML Studio → workspace overview |
+
+3. **Compute cluster** — create a GPU cluster in the workspace if you don't already have one:
+
+    ```bash
+    az ml compute create \
+        --name gpu-cluster \
+        --type amlcompute \
+        --min-instances 0 \
+        --max-instances 8 \
+        --size Standard_NC6s_v3 \
+        --workspace-name <workspace> \
+        --resource-group <resource-group> \
+        --subscription <subscription>
+    ```
+
+You can avoid typing `--subscription`, `--resource-group`, and `--workspace-name` on every command by setting defaults:
+
+```bash
+az configure --defaults group=<resource-group> workspace=<workspace>
+# Subscription default:
+az account set --subscription <subscription>
+```
+
+Or export them for the submission script:
+
+```bash
+export AML_SUBSCRIPTION=<subscription>
+export AML_RESOURCE_GROUP=<resource-group>
+export AML_WORKSPACE=<workspace>
+```
+
+---
+
+## Register the Azure ML environment (once)
+
+The `azureml/` directory contains the environment definition and job YAML files.
+Register the environment before submitting jobs for the first time:
+
+```bash
+bash scripts/aml_submit.sh \
+    --subscription "$AML_SUBSCRIPTION" \
+    --resource-group "$AML_RESOURCE_GROUP" \
+    --workspace "$AML_WORKSPACE" \
+    env
+```
+
+Or directly:
+
+```bash
+az ml environment create \
+    --file azureml/environment.yml \
+    --workspace-name "$AML_WORKSPACE" \
+    --resource-group "$AML_RESOURCE_GROUP" \
+    --subscription "$AML_SUBSCRIPTION"
+```
+
+The environment uses a PyTorch 2.2 + CUDA 12.1 base image.  Edit
+`azureml/environment.yml` and `azureml/conda.yml` to change the base image or
+add dependencies.
 
 ## Environment variables
 
@@ -38,17 +114,25 @@ modifying source code.
 | `WEATHER_GRAD_ACCUM_STEPS` | `training.gradient_accumulation_steps` | `8` |
 | `WEATHER_LEARNING_RATE` | `training.learning_rate` | `0.0002` |
 | `WEATHER_REPORT_TO` | `training.report_to` | `none` |
-| `HF_HOME` | HuggHuggingFaceingFace model cache | (HuggingFace default) |
+| `HF_HOME` | HuggingFace model cache | (HuggingFace default) |
 
 These are read at `AppConfig` construction time, so they apply to every CLI
-command without any extra flags.
+command without any extra flags.  In Azure ML jobs they are set via the
+`environment_variables` section of the job YAML and can be overridden per
+submission with `--set environment_variables.VAR=value`.
 
 ---
 
-## Mounting Azure Blob Storage
+## Data paths
 
-Use [blobfuse2](https://github.com/Azure/azure-storage-fuse) to mount a Blob
-Storage container as a local filesystem on each Batch node.
+Edit the `environment_variables` block in the relevant `azureml/*.yml` job file
+to point at your data.  The paths must be accessible on the compute node —
+typically a mounted Azure ML datastore or a blob container mounted via blobfuse2.
+
+### Mounting via blobfuse2 (optional)
+
+If you prefer to mount a Blob Storage container directly rather than using an
+Azure ML datastore:
 
 ```bash
 # Install blobfuse2 on Ubuntu 22.04
@@ -64,13 +148,12 @@ blobfuse2 mount /mnt/blob \
     --tmp-path=/mnt/blobfuse-cache
 ```
 
-Then point the pipeline at the mount:
+Then set paths in `azureml/extract_job.yml` (or via `--set`):
 
 ```bash
-export WEATHER_IMAGES_DIR=/mnt/blob/Daily_rainfall_sample/images
-export WEATHER_TRANSCRIPTIONS_DIR=/mnt/blob/Daily_rainfall_sample/transcriptions
-export WEATHER_OUTPUT_DIR=/mnt/blob/outputs
-export HF_HOME=/mnt/blob/hf_cache
+--set environment_variables.WEATHER_IMAGES_DIR=/mnt/blob/Daily_rainfall_sample/images
+--set environment_variables.WEATHER_OUTPUT_DIR=/mnt/blob/outputs
+--set environment_variables.HF_HOME=/mnt/blob/hf_cache
 ```
 
 ---
@@ -108,36 +191,34 @@ weather-extract batch-extract \
     --output-dir outputs/extractions
 ```
 
-### Sharded job array (Azure CLI)
+### Sharded job array (Azure ML)
+
+Use `scripts/aml_submit.sh` to submit one Azure ML job per shard:
 
 ```bash
-POOL_ID=gpu-pool
-JOB_ID=extract-$(date +%Y%m%d-%H%M%S)
-TOTAL_SHARDS=8
-
-az batch job create \
-    --id "$JOB_ID" \
-    --pool-id "$POOL_ID"
-
-for i in $(seq 1 "$TOTAL_SHARDS"); do
-    az batch task create \
-        --job-id "$JOB_ID" \
-        --task-id "extract-shard-$i" \
-        --command-line "/bin/bash \$AZ_BATCH_NODE_SHARED_DIR/scripts/azure_extract_array.sh" \
-        --environment-settings \
-            "AZ_BATCH_TASK_ID=$((i - 1))" \
-            "TOTAL_SHARDS=$TOTAL_SHARDS" \
-            "WEATHER_IMAGES_DIR=/mnt/blob/Daily_rainfall_sample/images" \
-            "WEATHER_TRANSCRIPTIONS_DIR=/mnt/blob/Daily_rainfall_sample/transcriptions" \
-            "WEATHER_OUTPUT_DIR=/mnt/blob/outputs" \
-            "WEATHER_MODEL=smolvlm" \
-            "HF_HOME=/mnt/blob/hf_cache"
-done
+bash scripts/aml_submit.sh \
+    --subscription "$AML_SUBSCRIPTION" \
+    --resource-group "$AML_RESOURCE_GROUP" \
+    --workspace "$AML_WORKSPACE" \
+    --total-shards 8 \
+    extract
 ```
 
-The script `scripts/azure_extract_array.sh` wraps this automatically when
-used with native Azure Batch task arrays (where `$AZ_BATCH_TASK_ID` is
-injected by the service).
+Or submit a single shard directly with the Azure ML CLI:
+
+```bash
+az ml job create \
+    --file azureml/extract_job.yml \
+    --workspace-name "$AML_WORKSPACE" \
+    --resource-group "$AML_RESOURCE_GROUP" \
+    --subscription "$AML_SUBSCRIPTION" \
+    --set environment_variables.SHARD=1 \
+    --set environment_variables.TOTAL_SHARDS=8 \
+    --set display_name="batch-extract-1-of-8"
+```
+
+Edit `azureml/extract_job.yml` to set your compute cluster name and data paths
+before submitting.
 
 ### Collecting results
 
@@ -174,36 +255,34 @@ weather-extract evaluate \
     --output-file outputs/eval/shard_1_of_4.json
 ```
 
-### Submit a job array (Azure CLI)
+### Submit a job array (Azure ML)
 
 ```bash
-POOL_ID=cpu-pool
-JOB_ID=eval-$(date +%Y%m%d-%H%M%S)
-TOTAL_SHARDS=8
-
-az batch job create \
-    --id "$JOB_ID" \
-    --pool-id "$POOL_ID"
-
-for i in $(seq 1 "$TOTAL_SHARDS"); do
-    az batch task create \
-        --job-id "$JOB_ID" \
-        --task-id "eval-shard-$i" \
-        --command-line "/bin/bash \$AZ_BATCH_NODE_SHARED_DIR/scripts/azure_evaluate_array.sh" \
-        --environment-settings \
-            "AZ_BATCH_TASK_ID=$((i - 1))" \
-            "TOTAL_SHARDS=$TOTAL_SHARDS" \
-            "WEATHER_IMAGES_DIR=/mnt/blob/Daily_rainfall_sample/images" \
-            "WEATHER_TRANSCRIPTIONS_DIR=/mnt/blob/Daily_rainfall_sample/transcriptions" \
-            "WEATHER_OUTPUT_DIR=/mnt/blob/outputs/eval" \
-            "WEATHER_MODEL=smolvlm" \
-            "HF_HOME=/mnt/blob/hf_cache"
-done
+bash scripts/aml_submit.sh \
+    --subscription "$AML_SUBSCRIPTION" \
+    --resource-group "$AML_RESOURCE_GROUP" \
+    --workspace "$AML_WORKSPACE" \
+    --total-shards 8 \
+    evaluate
 ```
 
-The script `scripts/azure_evaluate_array.sh` wraps this automatically when
-used with native Azure Batch task arrays (where `$AZ_BATCH_TASK_ID` is
-injected by the service).
+Or submit a single shard directly:
+
+```bash
+az ml job create \
+    --file azureml/evaluate_job.yml \
+    --workspace-name "$AML_WORKSPACE" \
+    --resource-group "$AML_RESOURCE_GROUP" \
+    --subscription "$AML_SUBSCRIPTION" \
+    --set environment_variables.SHARD=1 \
+    --set environment_variables.TOTAL_SHARDS=8 \
+    --set display_name="evaluate-1-of-8"
+```
+
+Edit `azureml/evaluate_job.yml` to set your compute cluster name and data paths.
+
+The script `scripts/azure_evaluate_array.sh` is provided for use with Azure Batch
+job arrays if you prefer that service instead of Azure ML.
 
 ### Aggregating shard results
 
@@ -225,14 +304,38 @@ print(f"Macro accuracy:   {statistics.mean(accuracies):.1%}")
 
 ## Fine-tuning on a GPU node
 
-### Single GPU
+### Submit the fine-tuning job (Azure ML)
 
 ```bash
-export WEATHER_IMAGES_DIR=/mnt/blob/Daily_rainfall_sample/images
-export WEATHER_TRANSCRIPTIONS_DIR=/mnt/blob/Daily_rainfall_sample/transcriptions
-export WEATHER_TRAINING_OUTPUT_DIR=/mnt/blob/outputs/checkpoints
-export HF_HOME=/mnt/blob/hf_cache
-export WEATHER_REPORT_TO=wandb   # or tensorboard, or none
+bash scripts/aml_submit.sh \
+    --subscription "$AML_SUBSCRIPTION" \
+    --resource-group "$AML_RESOURCE_GROUP" \
+    --workspace "$AML_WORKSPACE" \
+    finetune
+```
+
+Override training hyper-parameters with `--set`:
+
+```bash
+az ml job create \
+    --file azureml/finetune_job.yml \
+    --workspace-name "$AML_WORKSPACE" \
+    --resource-group "$AML_RESOURCE_GROUP" \
+    --subscription "$AML_SUBSCRIPTION" \
+    --set environment_variables.WEATHER_EPOCHS=5 \
+    --set environment_variables.WEATHER_REPORT_TO=wandb
+```
+
+Edit `azureml/finetune_job.yml` to choose your compute cluster name, data paths,
+and whether to use single-GPU or multi-GPU (the default command uses
+`accelerate launch` with `scripts/accelerate_config.yaml`).
+
+### Local / single-GPU run
+
+```bash
+export WEATHER_IMAGES_DIR=Daily_rainfall_sample/images
+export WEATHER_TRANSCRIPTIONS_DIR=Daily_rainfall_sample/transcriptions
+export WEATHER_TRAINING_OUTPUT_DIR=outputs/checkpoints
 
 weather-extract finetune --model smolvlm --epochs 5
 ```
@@ -241,13 +344,6 @@ weather-extract finetune --model smolvlm --epochs 5
 
 `scripts/accelerate_config.yaml` provides a ready-to-use configuration for
 single-node multi-GPU training (4× GPU by default — adjust `num_processes`).
-
-```bash
-export ACCELERATE_CONFIG=$PWD/scripts/accelerate_config.yaml
-bash scripts/azure_finetune.sh
-```
-
-Or directly:
 
 ```bash
 accelerate launch \
@@ -267,9 +363,9 @@ accelerate launch \
 
 ---
 
-## Node setup
+## Node setup (Azure Batch)
 
-`scripts/setup_env.sh` installs the Conda environment on a fresh Batch node.
+`scripts/setup_env.sh` installs the Conda environment on a fresh Azure Batch node.
 Call it as the pool start task or at the top of each job script:
 
 ```bash
@@ -277,4 +373,5 @@ bash scripts/setup_env.sh
 ```
 
 It reads `CONDA_HOME`, `REPO_DIR`, `CONDA_ENV_NAME`, and `HF_HOME` from the
-environment, with sensible defaults.
+environment, with sensible defaults.  This is not needed for Azure ML jobs —
+the environment is managed by the `azureml/environment.yml` definition.

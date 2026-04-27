@@ -1,0 +1,11 @@
+$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+name: weather-doc-extractor
+version: 1
+description: >
+  PyTorch + CUDA environment for weather document extraction.
+  All pip dependencies are installed here; the local package (weather-doc-extractor)
+  is installed at job runtime via `pip install -e .` so the latest code is always used.
+
+# PyTorch 2.2 + CUDA 12.1 curated base image.  Change to suit your GPU SKU.
+image: mcr.microsoft.com/azureml/curated/acpt-pytorch-2.2-cuda12.1:latest
+conda_file: conda.yml

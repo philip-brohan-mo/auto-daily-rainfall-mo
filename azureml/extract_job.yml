@@ -1,0 +1,53 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+display_name: batch-extract
+experiment_name: weather-doc-extractor
+description: >
+  Run bulk inference (batch-extract) over one shard of the images directory.
+  Submit N copies of this job (one per shard) via scripts/aml_submit.sh.
+
+# ── Compute ───────────────────────────────────────────────────────────────────
+# Name of your Azure ML compute cluster.  Create one in the Azure ML Studio
+# or with: az ml compute create -n gpu-cluster --type amlcompute --min-instances 0
+#           --max-instances 8 --size Standard_NC6s_v3 -w <ws> -g <rg>
+compute: azureml:gpu-cluster
+
+# ── Environment ───────────────────────────────────────────────────────────────
+# Register the environment first:
+#   az ml environment create --file azureml/environment.yml -w <ws> -g <rg> --subscription <sub>
+environment: azureml:weather-doc-extractor@latest
+
+# ── Code ──────────────────────────────────────────────────────────────────────
+# Uploads the repository root to an Azure ML snapshot.
+code: ..
+
+# ── Command ───────────────────────────────────────────────────────────────────
+# Installs the local package, then runs one shard of batch-extract.
+# SHARD and TOTAL_SHARDS are set via environment_variables below and can be
+# overridden per-submission with: --set environment_variables.SHARD=<n>
+command: >-
+  pip install -e . --quiet &&
+  weather-extract batch-extract
+  --shard $SHARD
+  --total-shards $TOTAL_SHARDS
+  --output-dir $EXTRACT_OUTPUT_DIR
+
+# ── Environment variables ─────────────────────────────────────────────────────
+# Edit paths to match your Azure ML datastore mount points or blob paths.
+environment_variables:
+  # Shard index (1-based) and total shards — overridden by aml_submit.sh.
+  SHARD: "1"
+  TOTAL_SHARDS: "1"
+
+  # Path to image files on the compute node (e.g. a mounted Azure ML datastore).
+  WEATHER_IMAGES_DIR: /mnt/blob/Daily_rainfall_sample/images
+
+  # Root output directory; extracted JSON files go to $EXTRACT_OUTPUT_DIR.
+  WEATHER_OUTPUT_DIR: /mnt/blob/outputs
+  EXTRACT_OUTPUT_DIR: /mnt/blob/outputs/extractions
+
+  # Model to use.  "smolvlm" resolves to HuggingFaceTB/SmolVLM-500M-Instruct.
+  WEATHER_MODEL: smolvlm
+
+  # Point HuggingFace cache at shared storage so each node does not re-download.
+  # HF_HOME: /mnt/blob/hf_cache

@@ -1,0 +1,45 @@
+$schema: https://azuremlschemas.azureedge.net/latest/commandJob.schema.json
+type: command
+display_name: finetune
+experiment_name: weather-doc-extractor
+description: >
+  Fine-tune the model using LoRA on paired image/transcription data.
+  Launches with `accelerate` for multi-GPU support when accelerate_config.yaml
+  is present (set ACCELERATE_CONFIG to override the config path).
+
+# ── Compute ───────────────────────────────────────────────────────────────────
+# Use a multi-GPU SKU (e.g. Standard_NC24s_v3 = 4× V100) for faster training.
+compute: azureml:gpu-cluster
+
+# ── Environment ───────────────────────────────────────────────────────────────
+environment: azureml:weather-doc-extractor@latest
+
+# ── Code ──────────────────────────────────────────────────────────────────────
+code: ..
+
+# ── Command ───────────────────────────────────────────────────────────────────
+# Uses accelerate for multi-GPU.  For single-GPU, replace the accelerate launch
+# line with: weather-extract finetune
+command: >-
+  pip install -e . --quiet &&
+  accelerate launch
+  --config_file scripts/accelerate_config.yaml
+  -m weather_doc_extractor.cli
+  finetune
+
+# ── Environment variables ─────────────────────────────────────────────────────
+environment_variables:
+  WEATHER_IMAGES_DIR: /mnt/blob/Daily_rainfall_sample/images
+  WEATHER_TRANSCRIPTIONS_DIR: /mnt/blob/Daily_rainfall_sample/transcriptions
+  WEATHER_TRAINING_OUTPUT_DIR: /mnt/blob/outputs/checkpoints
+
+  WEATHER_MODEL: smolvlm
+  WEATHER_EPOCHS: "3"
+  WEATHER_BATCH_SIZE: "1"
+  WEATHER_GRAD_ACCUM_STEPS: "8"
+  WEATHER_LEARNING_RATE: "0.0002"
+
+  # Set to "wandb" or "tensorboard" to enable experiment tracking.
+  WEATHER_REPORT_TO: none
+
+  # HF_HOME: /mnt/blob/hf_cache
