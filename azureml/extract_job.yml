@@ -50,7 +50,6 @@ outputs:
 # Add --set environment_variables.EXTRACT_LIMIT=5 to process only 5 images.
 # PYTHONPATH=src makes the local package importable without pip install.
 command: >-
-  PYTHONPATH=src
   WEATHER_IMAGES_DIR=${{inputs.images_dir}}
   OUTPUT_DIR=${{outputs.extractions}}
   HF_HOME=${{outputs.hf_cache}}
@@ -58,7 +57,8 @@ command: >-
 
 # ── Environment variables ─────────────────────────────────────────────────────
 environment_variables:
-  # Shard index (1-based) and total shards — overridden by aml_submit.sh.
+  # PYTHONPATH so the local src/ package is importable without pip install.
+  PYTHONPATH: src
   SHARD: "1"
   TOTAL_SHARDS: "1"
 
