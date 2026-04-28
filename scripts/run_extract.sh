@@ -10,6 +10,7 @@ if [[ -n "${EXTRACT_LIMIT:-}" ]]; then
 fi
 
 echo "[run_extract] shard=$SHARD/$TOTAL_SHARDS images=$WEATHER_IMAGES_DIR output=$OUTPUT_DIR ${LIMIT_FLAG:+limit=$EXTRACT_LIMIT}"
+python -c "import torch, transformers; print(f'[env] torch={torch.__version__} transformers={transformers.__version__} cuda={torch.version.cuda}')"
 
 python -m weather_doc_extractor.cli batch-extract \
     --shard "$SHARD" \

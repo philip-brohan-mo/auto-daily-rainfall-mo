@@ -18,6 +18,7 @@ dependencies:
       - datasets
       - huggingface_hub
       - peft
-      # transformers >=4.48 is required for SmolVLM image processor support.
-      - transformers>=4.48.0
+      # transformers >=4.49 is required for SmolVLM image processor support
+      # (SmolVLMImageProcessor was added in 4.49.0, not 4.48).
+      - transformers>=4.49.0
       - trl
