@@ -11,7 +11,9 @@ dependencies:
       - datasets
       - huggingface_hub
       - peft
-      - torch
-      - torchvision
+      # torch and torchvision are NOT listed here — they are provided by the base
+      # image (acpt-pytorch-2.2-cuda12.1) at the correct CUDA version. Installing
+      # them via pip would pull the latest wheel compiled for CUDA 12.6+, which
+      # exceeds the V100 node driver's max supported CUDA version (12.4).
       - transformers
       - trl
