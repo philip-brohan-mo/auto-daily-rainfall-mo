@@ -347,7 +347,94 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
     return processor, model
 
 
-def extract_grid(
+def extract_grid_batch_with_model(
+    image_paths: list[Path],
+    config: ModelConfig,
+    processor: Any,
+    model: Any,
+    family: str,
+) -> list[tuple[DailyRainfallGrid | None, str]]:
+    """Run inference on a batch of images in a single forward pass.
+
+    Processing images together makes better use of GPU parallelism compared
+    to calling :func:`extract_grid_with_model` in a loop.
+
+    Parameters
+    ----------
+    image_paths:
+        List of paths to document images.  All are processed together.
+    config:
+        Model generation parameters.
+    processor:
+        HuggingFace processor already loaded for this model.
+    model:
+        HuggingFace model already loaded and on the target device.
+    family:
+        Model family string from :func:`detect_model_family`.
+
+    Returns
+    -------
+    list of (grid, raw_text) pairs, one per input image, in order.
+    """
+    try:
+        import torch
+        from PIL import Image as PILImage
+    except ImportError as exc:
+        raise ImportError(
+            "Install the 'train' extras to run inference: pip install -e '.[train]'"
+        ) from exc
+
+    images = [PILImage.open(p).convert("RGB") for p in image_paths]
+
+    do_sample = config.temperature > 0.0
+    generate_kwargs: dict[str, Any] = dict(
+        max_new_tokens=config.max_new_tokens,
+        do_sample=do_sample,
+    )
+    if do_sample:
+        generate_kwargs["temperature"] = config.temperature
+
+    if family == "granite":
+        # Granite encodes the image URL in the message; process one at a time
+        # and concatenate — batched apply_chat_template is not well-supported.
+        return [
+            extract_grid_with_model(p, config, processor, model, family)
+            for p in image_paths
+        ]
+
+    # SmolVLM / generic: build one prompt per image, batch-tokenise with padding
+    text_prompts = [
+        processor.apply_chat_template(
+            build_messages(p, model_family=family),
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        for p in image_paths
+    ]
+    inputs = processor(
+        text=text_prompts,
+        images=images,
+        return_tensors="pt",
+        padding=True,
+    )
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+    with torch.inference_mode():
+        output_ids = model.generate(**inputs, **generate_kwargs)
+
+    # Inputs are left-padded to a uniform length; strip that prefix from outputs
+    input_len = inputs["input_ids"].shape[1]
+    results: list[tuple[DailyRainfallGrid | None, str]] = []
+    for i in range(len(image_paths)):
+        raw_text: str = processor.decode(
+            output_ids[i, input_len:],
+            skip_special_tokens=True,
+        )
+        results.append((parse_extraction_response(raw_text), raw_text))
+    return results
+
+
+
     image_path: Path,
     config: ModelConfig,
 ) -> tuple[DailyRainfallGrid | None, str]:

@@ -121,6 +121,7 @@ def run_batch_extract(
     shard: int | None = None,
     total_shards: int | None = None,
     limit: int | None = None,
+    batch_size: int = 4,
 ) -> dict[str, object]:
     """Run inference on every image in the configured images directory.
 
@@ -139,6 +140,9 @@ def run_batch_extract(
     limit:
         If set, process only the first *limit* images (after sharding).
         Useful for quick smoke tests.
+    batch_size:
+        Number of images to process in each forward pass.  Larger batches
+        improve GPU utilisation but require more VRAM.  Default: 4.
 
     Returns
     -------
@@ -148,7 +152,7 @@ def run_batch_extract(
     from weather_doc_extractor.inference import (
         _load_model_and_processor,
         detect_model_family,
-        extract_grid_with_model,
+        extract_grid_batch_with_model,
     )
 
     import json
@@ -166,25 +170,37 @@ def run_batch_extract(
     print(f"Loading model {config.model.model_name} …", flush=True)
     processor, model = _load_model_and_processor(config.model)
     family = detect_model_family(config.model.model_name)
+    print(f"Processing {len(records)} images in batches of {batch_size} …", flush=True)
 
-    for i, record in enumerate(records, 1):
-        print(f"  [{i}/{len(records)}] {record.stem} …", flush=True)
-        grid, raw_text = extract_grid_with_model(
-            record.image_path, config.model, processor, model, family
+    for batch_start in range(0, len(records), batch_size):
+        batch = records[batch_start : batch_start + batch_size]
+        batch_end = batch_start + len(batch)
+        print(
+            f"  [{batch_end}/{len(records)}] "
+            f"images {batch_start + 1}–{batch_end} …",
+            flush=True,
         )
-        if grid is not None:
-            result = {
-                "stem": record.stem,
-                "parse_failed": False,
-                "grid": grid.to_dict(),
-            }
-            succeeded += 1
-        else:
-            result = {"stem": record.stem, "parse_failed": True, "raw_text": raw_text}
-            failed += 1
-            print(f"    WARNING: parse failed for {record.stem}")
-        out_path = output_dir / f"{record.stem}.json"
-        out_path.write_text(json.dumps(result, indent=2, default=str))
+        results = extract_grid_batch_with_model(
+            [r.image_path for r in batch], config.model, processor, model, family
+        )
+        for record, (grid, raw_text) in zip(batch, results):
+            if grid is not None:
+                result = {
+                    "stem": record.stem,
+                    "parse_failed": False,
+                    "grid": grid.to_dict(),
+                }
+                succeeded += 1
+            else:
+                result = {
+                    "stem": record.stem,
+                    "parse_failed": True,
+                    "raw_text": raw_text,
+                }
+                failed += 1
+                print(f"    WARNING: parse failed for {record.stem}")
+            out_path = output_dir / f"{record.stem}.json"
+            out_path.write_text(json.dumps(result, indent=2, default=str))
 
     return {
         "total": len(records),

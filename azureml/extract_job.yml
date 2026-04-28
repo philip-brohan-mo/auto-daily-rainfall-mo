@@ -59,6 +59,9 @@ command: >-
 environment_variables:
   # PYTHONPATH so the local src/ package is importable without pip install.
   PYTHONPATH: src
+  # Number of images per forward pass. Larger = better GPU utilisation but more VRAM.
+  # 4 is a safe default for 16GB V100; increase for A100 (40GB).
+  BATCH_SIZE: "4"
   SHARD: "1"
   TOTAL_SHARDS: "1"
 

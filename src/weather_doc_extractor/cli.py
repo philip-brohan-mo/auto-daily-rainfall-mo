@@ -272,6 +272,7 @@ def run(argv: list[str] | None = None) -> int:
         shard: int | None = None
         total_shards: int | None = None
         limit: int | None = None
+        batch_size: int = 4
         remaining = _parse_model_flag(list(args[1:]), config)
         while remaining:
             flag = remaining.pop(0)
@@ -283,6 +284,8 @@ def run(argv: list[str] | None = None) -> int:
                 total_shards = int(remaining.pop(0))
             elif flag == "--limit" and remaining:
                 limit = int(remaining.pop(0))
+            elif flag == "--batch-size" and remaining:
+                batch_size = int(remaining.pop(0))
         if output_dir is None:
             model_slug = config.model.model_name.split("/")[-1]
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -302,6 +305,7 @@ def run(argv: list[str] | None = None) -> int:
             shard=shard,
             total_shards=total_shards,
             limit=limit,
+            batch_size=batch_size,
         )
         print(json.dumps(summary, indent=2, default=str))
         return 0
