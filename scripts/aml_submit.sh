@@ -126,7 +126,7 @@ case "$COMMAND" in
         NEXT_VERSION=$(( CURRENT_VERSION + 1 ))
         echo "Registering environment '$ENV_NAME' version $NEXT_VERSION..."
         # Patch the version line in environment.yml temporarily via sed
-        PATCHED_YML="$(mktemp --suffix=.yml)"
+        PATCHED_YML="$REPO_DIR/azureml/.environment_tmp.yml"
         sed "s/^version:.*/version: $NEXT_VERSION/" \
             "$REPO_DIR/azureml/environment.yml" > "$PATCHED_YML"
         az ml environment create \
