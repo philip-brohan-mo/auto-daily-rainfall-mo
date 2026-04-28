@@ -117,11 +117,27 @@ echo
 
 case "$COMMAND" in
     env)
-        echo "Registering Azure ML environment in workspace '$AML_WORKSPACE'..."
+        # Auto-increment the version in environment.yml so re-registration
+        # always creates a new immutable version rather than failing.
+        ENV_NAME=$(grep '^name:' "$REPO_DIR/azureml/environment.yml" | awk '{print $2}')
+        CURRENT_VERSION=$(az ml environment show \
+            --name "$ENV_NAME" "${AML_ARGS[@]}" \
+            --query version --output tsv 2>/dev/null || echo "0")
+        NEXT_VERSION=$(( CURRENT_VERSION + 1 ))
+        echo "Registering environment '$ENV_NAME' version $NEXT_VERSION..."
+        # Patch the version line in environment.yml temporarily via sed
+        PATCHED_YML="$(mktemp --suffix=.yml)"
+        sed "s/^version:.*/version: $NEXT_VERSION/" \
+            "$REPO_DIR/azureml/environment.yml" > "$PATCHED_YML"
         az ml environment create \
-            --file "$REPO_DIR/azureml/environment.yml" \
+            --file "$PATCHED_YML" \
             "${AML_ARGS[@]}"
-        echo "Environment registered."
+        rm -f "$PATCHED_YML"
+        # Persist the new version back into environment.yml
+        sed -i "s/^version:.*/version: $NEXT_VERSION/" \
+            "$REPO_DIR/azureml/environment.yml"
+        echo "Environment registered as version $NEXT_VERSION."
+        echo "environment.yml updated — commit the version bump if desired."
         ;;
 
     extract)
