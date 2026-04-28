@@ -50,9 +50,9 @@ outputs:
 # Add --set environment_variables.EXTRACT_LIMIT=5 to process only 5 images.
 # PYTHONPATH=src makes the local package importable without pip install.
 command: >-
-  WEATHER_IMAGES_DIR=${{inputs.images_dir}}
-  OUTPUT_DIR=${{outputs.extractions}}
-  HF_HOME=${{outputs.hf_cache}}
+  export WEATHER_IMAGES_DIR=${{inputs.images_dir}} &&
+  export OUTPUT_DIR=${{outputs.extractions}} &&
+  export HF_HOME=${{outputs.hf_cache}} &&
   bash scripts/run_extract.sh
 
 # ── Environment variables ─────────────────────────────────────────────────────
