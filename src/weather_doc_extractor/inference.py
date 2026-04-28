@@ -255,7 +255,22 @@ def _is_adapter_path(name: str) -> bool:
     return p.is_dir() and (p / "adapter_config.json").exists()
 
 
-def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
+def _gpu_dtype() -> "torch.dtype":
+    """Return the best floating-point dtype for the available GPU.
+
+    * ``bfloat16`` — Ampere and newer (compute capability >= 8.0, e.g. A100)
+    * ``float16``  — older CUDA GPUs (e.g. V100, T4) that lack bfloat16 support
+    * ``float32``  — CPU fallback
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return torch.float32
+    major = torch.cuda.get_device_capability()[0]
+    return torch.bfloat16 if major >= 8 else torch.float16
+
+
+
     """Load the processor and model from HuggingFace (or a local LoRA adapter).
 
     If *config.model_name* points to a local directory that contains
@@ -286,7 +301,7 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         )
         base = AutoModelForImageTextToText.from_pretrained(
             base_model_name,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            torch_dtype=_gpu_dtype(),
             device_map=config.device,
             trust_remote_code=True,
         )
@@ -298,7 +313,7 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         )
         model = AutoModelForImageTextToText.from_pretrained(
             config.model_name,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            torch_dtype=_gpu_dtype(),
             device_map=config.device,
             trust_remote_code=True,
         )
