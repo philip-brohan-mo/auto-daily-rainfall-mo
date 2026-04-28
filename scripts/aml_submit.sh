@@ -50,6 +50,7 @@ fi
 COMMAND=""
 TOTAL_SHARDS=8
 EXTRACT_LIMIT=""
+BATCH_SIZE="${BATCH_SIZE:-4}"
 WEATHER_MODEL="${WEATHER_MODEL:-smolvlm}"
 AML_COMPUTE="${AML_COMPUTE:-gpu-cluster}"
 AML_SUBSCRIPTION="${AML_SUBSCRIPTION:-}"
@@ -73,6 +74,7 @@ while [[ $# -gt 0 ]]; do
         --workspace)       AML_WORKSPACE="$2";        shift 2 ;;
         --total-shards)    TOTAL_SHARDS="$2";         shift 2 ;;
         --limit)           EXTRACT_LIMIT="$2";        shift 2 ;;
+        --batch-size)      BATCH_SIZE="$2";            shift 2 ;;
         --model)           WEATHER_MODEL="$2";        shift 2 ;;
         --compute)         AML_COMPUTE="$2";          shift 2 ;;
         --help|-h)         usage 0 ;;
@@ -159,6 +161,7 @@ case "$COMMAND" in
                 --set environment_variables.SHARD="$i" \
                 --set environment_variables.TOTAL_SHARDS="$TOTAL_SHARDS" \
                 --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
+                --set environment_variables.BATCH_SIZE="$BATCH_SIZE" \
                 ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
                 --set display_name="batch-extract-${MODEL_SLUG}-${i}-of-${TOTAL_SHARDS}" \
                 --query name --output tsv
