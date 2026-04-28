@@ -1,13 +1,14 @@
 $schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
 name: weather-doc-extractor
-version: 4
+version: 5
 description: >
   PyTorch + CUDA environment for weather document extraction.
   All pip dependencies are installed here; the local package (weather-doc-extractor)
   is installed at job runtime via `pip install -e .` so the latest code is always used.
 
-# CUDA 12.1 base image — compatible with V100/Tesla nodes whose drivers support up to CUDA 12.4.
-# (acpt-pytorch-2.0-cuda11.7:latest was updated to PyTorch compiled for CUDA 12.5+,
-#  which exceeds the V100 driver capability of CUDA 12.4 / driver version 12040.)
-image: mcr.microsoft.com/azureml/curated/acpt-pytorch-2.2-cuda12.1:latest
+# CUDA 12.1 base image — pinned to tag 1 (original build, actual CUDA 12.1).
+# V100 driver supports up to CUDA 12.4 (version 12040); CUDA 12.1 < 12.4 so this works.
+# Do NOT use :latest — both cuda11.7 and cuda12.1 :latest tags have been updated to
+# PyTorch compiled against CUDA 12.5+, which exceeds the V100 driver's max of 12.4.
+image: mcr.microsoft.com/azureml/curated/acpt-pytorch-2.2-cuda12.1:1
 conda_file: conda.yml
