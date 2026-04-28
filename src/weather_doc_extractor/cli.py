@@ -264,7 +264,11 @@ def run(argv: list[str] | None = None) -> int:
     if command == "batch-extract":
         # Usage: batch-extract [--model X] [--output-dir PATH]
         #                      [--shard N --total-shards M] [--limit N]
-        output_dir: Path = config.paths.outputs_dir / "extractions"
+        # Default output: outputs/extractions/<model-slug>/<YYYYMMDD-HHMMSS>/
+        # Override with --output-dir to write to a specific path.
+        from datetime import datetime, timezone
+
+        output_dir: Path | None = None
         shard: int | None = None
         total_shards: int | None = None
         limit: int | None = None
@@ -279,6 +283,10 @@ def run(argv: list[str] | None = None) -> int:
                 total_shards = int(remaining.pop(0))
             elif flag == "--limit" and remaining:
                 limit = int(remaining.pop(0))
+        if output_dir is None:
+            model_slug = config.model.model_name.split("/")[-1]
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            output_dir = config.paths.outputs_dir / "extractions" / model_slug / timestamp
         if (shard is None) != (total_shards is None):
             print("--shard and --total-shards must be used together", file=sys.stderr)
             return 1
