@@ -59,6 +59,7 @@ AML_DATASTORE_BASE="${AML_DATASTORE_BASE:-azureml://datastores/workspaceblobstor
 AML_IMAGES_PATH="${AML_IMAGES_PATH:-Daily_rainfall_sample/images}"
 AML_TRANSCRIPTIONS_PATH="${AML_TRANSCRIPTIONS_PATH:-Daily_rainfall_sample/transcriptions}"
 AML_OUTPUTS_PATH="${AML_OUTPUTS_PATH:-outputs}"
+AML_HF_CACHE_PATH="${AML_HF_CACHE_PATH:-hf_cache}"
 
 usage() {
     sed -n '2,/^set -/p' "$0" | grep '^#' | sed 's/^# \?//'
@@ -98,6 +99,7 @@ IMAGES_URI="$AML_DATASTORE_BASE/$AML_IMAGES_PATH"
 TRANSCRIPTIONS_URI="$AML_DATASTORE_BASE/$AML_TRANSCRIPTIONS_PATH"
 OUTPUTS_URI="$AML_DATASTORE_BASE/$AML_OUTPUTS_PATH"
 EXTRACTIONS_URI="$OUTPUTS_URI/extractions/$MODEL_SLUG/$RUN_TIMESTAMP"
+HF_CACHE_URI="$AML_DATASTORE_BASE/$AML_HF_CACHE_PATH"
 
 AML_ARGS=(
     --workspace-name "$AML_WORKSPACE"
@@ -124,7 +126,8 @@ case "$COMMAND" in
 
     extract)
         echo "Submitting $TOTAL_SHARDS extract shard(s)${EXTRACT_LIMIT:+ (limit: $EXTRACT_LIMIT images each)}..."
-        echo "  Output: $EXTRACTIONS_URI"
+        echo "  Output:   $EXTRACTIONS_URI"
+        echo "  HF cache: $HF_CACHE_URI"
         for i in $(seq 1 "$TOTAL_SHARDS"); do
             echo "  Shard $i / $TOTAL_SHARDS ..."
             az ml job create \
@@ -132,6 +135,7 @@ case "$COMMAND" in
                 "${AML_ARGS[@]}" \
                 --set compute="azureml:$AML_COMPUTE" \
                 --set inputs.images_dir.path="$IMAGES_URI" \
+                --set inputs.hf_cache.path="$HF_CACHE_URI" \
                 --set outputs.extractions.path="$EXTRACTIONS_URI" \
                 --set environment_variables.SHARD="$i" \
                 --set environment_variables.TOTAL_SHARDS="$TOTAL_SHARDS" \
