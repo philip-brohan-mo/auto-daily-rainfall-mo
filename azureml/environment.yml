@@ -6,7 +6,8 @@ description: >
   All pip dependencies are installed here; the local package (weather-doc-extractor)
   is installed at job runtime via `pip install -e .` so the latest code is always used.
 
-# CUDA 11.8 base image — compatible with V100 and older Tesla nodes.
-# (CUDA 12.x/13.x requires driver >= 525/570 which V100 nodes do not have.)
-image: mcr.microsoft.com/azureml/curated/acpt-pytorch-2.2-cuda11.8:latest
+# CUDA 11.7 base image — compatible with V100 and older Tesla nodes.
+# (CUDA 12.x/13.x requires driver >= 525/570 which V100 nodes do not have.
+#  CUDA 11.7 requires driver >= 450, which all V100 nodes support.)
+image: azureml://registries/azureml/environments/acpt-pytorch-2.0-cuda11.7/labels/latest
 conda_file: conda.yml
