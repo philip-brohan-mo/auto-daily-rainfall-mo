@@ -270,7 +270,7 @@ def _gpu_dtype() -> "torch.dtype":
     return torch.bfloat16 if major >= 8 else torch.float16
 
 
-
+def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
     """Load the processor and model from HuggingFace (or a local LoRA adapter).
 
     If *config.model_name* points to a local directory that contains
