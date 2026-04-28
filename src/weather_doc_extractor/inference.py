@@ -260,7 +260,7 @@ def _gpu_dtype() -> "torch.dtype":
 
     * ``bfloat16`` — Ampere and newer (compute capability >= 8.0, e.g. A100)
     * ``float16``  — older CUDA GPUs (e.g. V100, T4) that lack bfloat16 support
-    * ``float32``  — CPU fallback
+    * ``float32``  — CPU fallback (also used when CUDA is unavailable)
     """
     import torch
 
@@ -269,6 +269,29 @@ def _gpu_dtype() -> "torch.dtype":
     major = torch.cuda.get_device_capability()[0]
     return torch.bfloat16 if major >= 8 else torch.float16
 
+
+def _log_device_info() -> None:
+    """Print GPU/CUDA diagnostics to stdout for AML job logs."""
+    import torch
+
+    print("[device] torch version:", torch.__version__)
+    print("[device] CUDA available:", torch.cuda.is_available())
+    if torch.cuda.is_available():
+        n = torch.cuda.device_count()
+        print(f"[device] CUDA device count: {n}")
+        for i in range(n):
+            props = torch.cuda.get_device_properties(i)
+            print(
+                f"[device]   GPU {i}: {props.name}  "
+                f"CC={props.major}.{props.minor}  "
+                f"VRAM={props.total_memory // 1024**3}GB"
+            )
+        print("[device] dtype selected:", _gpu_dtype())
+    else:
+        print("[device] WARNING: no CUDA device found — running on CPU")
+        # Print CUDA version the build was compiled against (may differ from driver)
+        print("[device] CUDA build version:", torch.version.cuda)
+    print(flush=True)
 
 def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
     """Load the processor and model from HuggingFace (or a local LoRA adapter).
@@ -286,6 +309,8 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         raise ImportError(
             "Install the 'train' extras to run inference: " "pip install -e '.[train]'"
         ) from exc
+
+    _log_device_info()
 
     if _is_adapter_path(config.model_name):
         import json as _json
