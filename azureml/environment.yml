@@ -1,6 +1,6 @@
 $schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
 name: weather-doc-extractor
-version: 2
+version: 3
 description: >
   PyTorch + CUDA environment for weather document extraction.
   All pip dependencies are installed here; the local package (weather-doc-extractor)
