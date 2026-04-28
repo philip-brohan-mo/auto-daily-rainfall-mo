@@ -29,21 +29,19 @@ inputs:
     type: uri_folder
     path: azureml://datastores/workspaceblobstore/paths/Daily_rainfall_sample/images
     mode: ro_mount
-  # Persistent HuggingFace model cache — shared across all jobs so weights are
-  # only downloaded once.  Point this at a datastore path you create once;
-  # aml_submit.sh sets it via --set inputs.hf_cache.path=...
-  hf_cache:
-    type: uri_folder
-    path: azureml://datastores/workspaceblobstore/paths/hf_cache
-    mode: rw_mount
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
-# Azure ML mounts this as a writable directory backed by the workspace default
-# datastore.  Results are accessible via Studio → job → Outputs + logs tab,
-# and can be downloaded or used as inputs to subsequent jobs.
 outputs:
   extractions:
     type: uri_folder
+    mode: rw_mount
+  # Persistent HuggingFace model cache — shared across all jobs so weights are
+  # only downloaded once.  Declared as an output (rw_mount) so the job can
+  # write new downloads; pointing all jobs at the same datastore path means
+  # subsequent jobs find the weights already cached.
+  hf_cache:
+    type: uri_folder
+    path: azureml://datastores/workspaceblobstore/paths/hf_cache
     mode: rw_mount
 
 # ── Command ───────────────────────────────────────────────────────────────────
@@ -54,7 +52,7 @@ command: >-
   pip install -e . --quiet &&
   WEATHER_IMAGES_DIR=${{inputs.images_dir}}
   OUTPUT_DIR=${{outputs.extractions}}
-  HF_HOME=${{inputs.hf_cache}}
+  HF_HOME=${{outputs.hf_cache}}
   bash scripts/run_extract.sh
 
 # ── Environment variables ─────────────────────────────────────────────────────

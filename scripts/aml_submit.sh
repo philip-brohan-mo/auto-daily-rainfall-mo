@@ -135,8 +135,8 @@ case "$COMMAND" in
                 "${AML_ARGS[@]}" \
                 --set compute="azureml:$AML_COMPUTE" \
                 --set inputs.images_dir.path="$IMAGES_URI" \
-                --set inputs.hf_cache.path="$HF_CACHE_URI" \
                 --set outputs.extractions.path="$EXTRACTIONS_URI" \
+                --set outputs.hf_cache.path="$HF_CACHE_URI" \
                 --set environment_variables.SHARD="$i" \
                 --set environment_variables.TOTAL_SHARDS="$TOTAL_SHARDS" \
                 --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
