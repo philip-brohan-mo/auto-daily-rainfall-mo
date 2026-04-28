@@ -435,6 +435,7 @@ def extract_grid_batch_with_model(
 
 
 
+def extract_grid(
     image_path: Path,
     config: ModelConfig,
 ) -> tuple[DailyRainfallGrid | None, str]:
