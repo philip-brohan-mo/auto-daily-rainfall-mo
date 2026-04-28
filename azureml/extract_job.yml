@@ -48,8 +48,9 @@ outputs:
 # SHARD and TOTAL_SHARDS are set via environment_variables below and can be
 # overridden per-submission with: --set environment_variables.SHARD=<n>
 # Add --set environment_variables.EXTRACT_LIMIT=5 to process only 5 images.
+# PYTHONPATH=src makes the local package importable without pip install.
 command: >-
-  pip install -e . --quiet &&
+  PYTHONPATH=src
   WEATHER_IMAGES_DIR=${{inputs.images_dir}}
   OUTPUT_DIR=${{outputs.extractions}}
   HF_HOME=${{outputs.hf_cache}}
