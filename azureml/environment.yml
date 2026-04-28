@@ -9,5 +9,5 @@ description: >
 # CUDA 11.7 base image — compatible with V100 and older Tesla nodes.
 # (CUDA 12.x/13.x requires driver >= 525/570 which V100 nodes do not have.
 #  CUDA 11.7 requires driver >= 450, which all V100 nodes support.)
-image: azureml://registries/azureml/environments/acpt-pytorch-2.0-cuda11.7/labels/latest
+image: mcr.microsoft.com/azureml/curated/acpt-pytorch-2.0-cuda11.7:latest
 conda_file: conda.yml
