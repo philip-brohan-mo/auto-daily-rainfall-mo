@@ -120,9 +120,12 @@ case "$COMMAND" in
         # Auto-increment the version in environment.yml so re-registration
         # always creates a new immutable version rather than failing.
         ENV_NAME=$(grep '^name:' "$REPO_DIR/azureml/environment.yml" | awk '{print $2}')
-        CURRENT_VERSION=$(az ml environment show \
+        # Query the highest registered version (list all, take the max numerically)
+        CURRENT_VERSION=$(az ml environment list \
             --name "$ENV_NAME" "${AML_ARGS[@]}" \
-            --query version --output tsv 2>/dev/null || echo "0")
+            --query "[].version" --output tsv 2>/dev/null \
+            | sort -n | tail -1)
+        CURRENT_VERSION="${CURRENT_VERSION:-0}"
         NEXT_VERSION=$(( CURRENT_VERSION + 1 ))
         echo "Registering environment '$ENV_NAME' version $NEXT_VERSION..."
         # Patch the version line in environment.yml temporarily via sed
