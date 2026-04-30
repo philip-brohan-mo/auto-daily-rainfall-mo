@@ -289,7 +289,9 @@ def run(argv: list[str] | None = None) -> int:
         if output_dir is None:
             model_slug = config.model.model_name.split("/")[-1]
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            output_dir = config.paths.outputs_dir / "extractions" / model_slug / timestamp
+            output_dir = (
+                config.paths.outputs_dir / "extractions" / model_slug / timestamp
+            )
         if (shard is None) != (total_shards is None):
             print("--shard and --total-shards must be used together", file=sys.stderr)
             return 1

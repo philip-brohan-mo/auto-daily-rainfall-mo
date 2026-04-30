@@ -293,6 +293,87 @@ def _log_device_info() -> None:
         print("[device] CUDA build version:", torch.version.cuda)
     print(flush=True)
 
+
+def _local_hf_home() -> Path | None:
+    """Return a local copy of HF_HOME, syncing from a remote mount if needed.
+
+    When HF_HOME points to a blob-storage mount (slow random reads), this
+    copies the cache to /tmp/hf_cache once and returns that path.  Subsequent
+    calls within the same process return the already-copied path immediately.
+
+    Returns None if HF_HOME is not set (HuggingFace uses its default cache).
+    """
+    import os
+    import shutil
+
+    hf_home = os.environ.get("HF_HOME")
+    if not hf_home:
+        return None
+
+    src = Path(hf_home)
+    local = Path("/tmp/hf_cache")
+
+    if local.exists():
+        print(f"[cache] Using already-copied local HF cache at {local}", flush=True)
+        return local
+
+    if src.exists() and any(src.iterdir()):
+        print(
+            f"[cache] Copying HF cache from {src} → {local} (blob mount → local) …",
+            flush=True,
+        )
+        import time
+
+        t0 = time.monotonic()
+        shutil.copytree(src, local)
+        elapsed = time.monotonic() - t0
+        size_mb = sum(f.stat().st_size for f in local.rglob("*") if f.is_file()) / 1e6
+        print(f"[cache] Copy complete: {size_mb:.0f} MB in {elapsed:.1f}s", flush=True)
+    else:
+        print(
+            f"[cache] HF cache at {src} is empty or missing — model will be downloaded.",
+            flush=True,
+        )
+        local.mkdir(parents=True, exist_ok=True)
+
+    return local
+
+
+def _resolve_model_path(model_name: str) -> str:
+    """Return the local snapshot path for *model_name* if it is cached, else *model_name*.
+
+    Uses ``snapshot_download(local_files_only=True)`` to resolve the exact
+    directory that ``from_pretrained`` would read from.  Passing that path
+    directly to ``from_pretrained`` guarantees loading from local disk —
+    there is no ambiguity about whether a network call is made.
+
+    If the snapshot is not in the local cache, logs a CACHE MISS and returns
+    the original *model_name* so transformers can download it normally.
+    """
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.utils import LocalEntryNotFoundError
+
+    try:
+        local_path = snapshot_download(model_name, local_files_only=True)
+        size_mb = (
+            sum(f.stat().st_size for f in Path(local_path).rglob("*") if f.is_file())
+            / 1e6
+        )
+        print(
+            f"[cache] CACHE HIT — loading {model_name} from local snapshot:\n"
+            f"        {local_path}  ({size_mb:.0f} MB)",
+            flush=True,
+        )
+        return local_path
+    except LocalEntryNotFoundError:
+        print(
+            f"[cache] CACHE MISS — {model_name} not in local cache; "
+            "downloading from HuggingFace.",
+            flush=True,
+        )
+        return model_name
+
+
 def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
     """Load the processor and model from HuggingFace (or a local LoRA adapter).
 
@@ -302,6 +383,8 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
 
     Raises ``ImportError`` if the ``train`` extras are not installed.
     """
+    import os
+
     try:
         import torch
         from transformers import AutoModelForImageTextToText, AutoProcessor
@@ -312,6 +395,16 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
 
     _log_device_info()
 
+    # Copy HF cache to local disk to avoid slow random reads over blob mount.
+    # Save the original path so we can sync new downloads back afterwards.
+    original_hf_home = os.environ.get("HF_HOME")
+    local_cache = _local_hf_home()
+    if local_cache is not None:
+        os.environ["HF_HOME"] = str(local_cache)
+        if original_hf_home and Path(original_hf_home) != local_cache:
+            os.environ["_ORIGINAL_HF_HOME"] = original_hf_home
+        print(f"[cache] HF_HOME set to local cache: {local_cache}", flush=True)
+
     if _is_adapter_path(config.model_name):
         import json as _json
 
@@ -320,31 +413,65 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         adapter_dir = Path(config.model_name)
         adapter_cfg = _json.loads((adapter_dir / "adapter_config.json").read_text())
         base_model_name = adapter_cfg["base_model_name_or_path"]
+        resolved_name = _resolve_model_path(base_model_name)
 
-        processor = AutoProcessor.from_pretrained(
-            base_model_name, trust_remote_code=True
-        )
+        processor = AutoProcessor.from_pretrained(resolved_name, trust_remote_code=True)
         base = AutoModelForImageTextToText.from_pretrained(
-            base_model_name,
+            resolved_name,
             torch_dtype=_gpu_dtype(),
             device_map=config.device,
             trust_remote_code=True,
         )
         model = PeftModel.from_pretrained(base, str(adapter_dir))
     else:
+        resolved_name = _resolve_model_path(config.model_name)
         processor = AutoProcessor.from_pretrained(
-            config.model_name,
+            resolved_name,
             trust_remote_code=True,
         )
         model = AutoModelForImageTextToText.from_pretrained(
-            config.model_name,
+            resolved_name,
             torch_dtype=_gpu_dtype(),
             device_map=config.device,
             trust_remote_code=True,
         )
 
     model.eval()
+
+    # Write any newly-downloaded files back to the persistent blob-store cache.
+    _sync_cache_to_remote(local_cache)
+
     return processor, model
+
+
+def _sync_cache_to_remote(local_cache: "Path | None") -> None:
+    """Copy new files from *local_cache* back to the original HF_HOME mount.
+
+    Only runs if HF_HOME was originally a different path (i.e. a blob mount).
+    Skips files that already exist at the destination to avoid redundant I/O.
+    """
+    import os
+    import shutil
+
+    original_hf_home = os.environ.get("_ORIGINAL_HF_HOME")
+    if local_cache is None or not original_hf_home:
+        return
+
+    dst = Path(original_hf_home)
+    new_files = 0
+    for src_file in local_cache.rglob("*"):
+        if not src_file.is_file():
+            continue
+        rel = src_file.relative_to(local_cache)
+        dst_file = dst / rel
+        if not dst_file.exists():
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst_file)
+            new_files += 1
+    if new_files:
+        print(f"[cache] Wrote {new_files} new file(s) back to {dst}", flush=True)
+    else:
+        print("[cache] No new files to sync back to remote cache.", flush=True)
 
 
 def extract_grid_batch_with_model(
@@ -432,7 +559,6 @@ def extract_grid_batch_with_model(
         )
         results.append((parse_extraction_response(raw_text), raw_text))
     return results
-
 
 
 def extract_grid(
