@@ -126,7 +126,6 @@ class ParseExtractionResponseTests(unittest.TestCase):
         grid = parse_extraction_response(raw)
         self.assertIsNotNone(grid)
 
-
         """A JSON object cut off mid-stream should be repaired and parsed."""
         truncated = _make_truncated_json(stop_at_day=15)
         grid = parse_extraction_response(truncated)
@@ -164,22 +163,51 @@ class ExtractObjectTests(unittest.TestCase):
     def test_no_object_returns_none(self) -> None:
         self.assertIsNone(_extract_object("no braces here"))
 
-
-
     def test_smolvlm_detected(self) -> None:
-        self.assertEqual(detect_model_family("HuggingFaceTB/SmolVLM-500M-Instruct"), "smolvlm")
+        self.assertEqual(
+            detect_model_family("HuggingFaceTB/SmolVLM-500M-Instruct"), "smolvlm"
+        )
 
     def test_smolvlm_case_insensitive(self) -> None:
         self.assertEqual(detect_model_family("HuggingFaceTB/smolvlm-256m"), "smolvlm")
 
     def test_idefics_detected_as_smolvlm(self) -> None:
-        self.assertEqual(detect_model_family("HuggingFaceM4/Idefics3-8B-Llama3"), "smolvlm")
+        self.assertEqual(
+            detect_model_family("HuggingFaceM4/Idefics3-8B-Llama3"), "smolvlm"
+        )
 
     def test_granite_detected(self) -> None:
-        self.assertEqual(detect_model_family("ibm-granite/granite-vision-3.2-2b"), "granite")
+        self.assertEqual(
+            detect_model_family("ibm-granite/granite-vision-3.2-2b"), "granite"
+        )
 
     def test_granite_case_insensitive(self) -> None:
-        self.assertEqual(detect_model_family("ibm-granite/Granite-Vision-3.2-2B"), "granite")
+        self.assertEqual(
+            detect_model_family("ibm-granite/Granite-Vision-3.2-2B"), "granite"
+        )
+
+    def test_gemma3_detected(self) -> None:
+        self.assertEqual(detect_model_family("google/gemma-3-4b-it"), "gemma3")
+
+    def test_gemma3_case_insensitive(self) -> None:
+        self.assertEqual(detect_model_family("google/Gemma-3-27B-IT"), "gemma3")
+
+    def test_gemma4_detected(self) -> None:
+        self.assertEqual(detect_model_family("google/gemma-4-E4B-it"), "gemma4")
+
+    def test_gemma4_not_confused_with_gemma3(self) -> None:
+        """gemma-4 must be detected as gemma4, not gemma3."""
+        self.assertEqual(detect_model_family("google/gemma-4-27B-it"), "gemma4")
+
+    def test_phi35_vision_detected(self) -> None:
+        self.assertEqual(
+            detect_model_family("microsoft/Phi-3.5-vision-instruct"), "phi"
+        )
+
+    def test_phi4_multimodal_detected(self) -> None:
+        self.assertEqual(
+            detect_model_family("microsoft/Phi-4-multimodal-instruct"), "phi"
+        )
 
     def test_unknown_returns_generic(self) -> None:
         self.assertEqual(detect_model_family("some-org/some-unknown-model"), "generic")
@@ -207,6 +235,31 @@ class BuildMessagesTests(unittest.TestCase):
         self.assertEqual(len(image_items), 1)
         self.assertEqual(image_items[0]["url"], str(p))
 
+    def test_gemma3_embeds_pil_image(self) -> None:
+        """Gemma 3 should include the PIL image object in the message content."""
+        sentinel = object()  # stand-in for a PIL image
+        msgs = build_messages(model_family="gemma3", pil_image=sentinel)
+        image_items = [i for i in msgs[0]["content"] if i["type"] == "image"]
+        self.assertEqual(len(image_items), 1)
+        self.assertIs(image_items[0]["image"], sentinel)
+        self.assertNotIn("url", image_items[0])
+
+    def test_gemma4_uses_placeholder(self) -> None:
+        """Gemma 4 uses the same placeholder convention as SmolVLM."""
+        msgs = build_messages(model_family="gemma4")
+        image_items = [i for i in msgs[0]["content"] if i["type"] == "image"]
+        self.assertEqual(len(image_items), 1)
+        self.assertNotIn("url", image_items[0])
+        self.assertNotIn("image", image_items[0])
+
+    def test_phi_content_is_string_with_image_token(self) -> None:
+        """Phi uses a plain string content with the <|image_1|> token."""
+        msgs = build_messages(model_family="phi")
+        self.assertEqual(len(msgs), 1)
+        content = msgs[0]["content"]
+        self.assertIsInstance(content, str)
+        self.assertIn("<|image_1|>", content)
+
     def test_generic_falls_back_to_placeholder(self) -> None:
         msgs = build_messages(model_family="generic")
         image_items = [i for i in msgs[0]["content"] if i["type"] == "image"]
@@ -219,8 +272,20 @@ class BuildMessagesTests(unittest.TestCase):
         prompt_text = text_items[0]["text"]
         self.assertIn("Day 1", prompt_text)
         # All 12 months should be named explicitly
-        for month in ["January", "February", "March", "April", "May", "June",
-                      "July", "August", "September", "October", "November", "December"]:
+        for month in [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ]:
             self.assertIn(month, prompt_text)
 
 

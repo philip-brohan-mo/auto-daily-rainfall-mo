@@ -31,9 +31,13 @@ from weather_doc_extractor.schemas import DailyRainfallGrid
 # ---------------------------------------------------------------------------
 
 #: Known model families and the substrings that identify them.
+#: Order matters — more specific prefixes must come before broader ones.
 _FAMILY_PATTERNS: list[tuple[str, list[str]]] = [
+    ("gemma4", ["gemma-4"]),
+    ("gemma3", ["gemma-3"]),
     ("smolvlm", ["smolvlm", "idefics"]),
     ("granite", ["granite"]),
+    ("phi", ["phi-3.5-vision", "phi-4-multimodal"]),
 ]
 
 
@@ -95,41 +99,80 @@ Output ONLY the JSON object, no commentary, no markdown fences:"""
 def build_messages(
     image_path: Path | None = None,
     model_family: str = "smolvlm",
+    pil_image: Any = None,
 ) -> list[dict[str, Any]]:
     """Return a chat-message list appropriate for *model_family*.
 
-    SmolVLM / Idefics3
+    SmolVLM / Idefics3 / Gemma 4 / generic
         Uses ``{"type": "image"}`` as a placeholder; the PIL image is passed
         separately to ``processor(images=[...])``.
 
-    Granite
-        Embeds the image URL/path directly in the message content as
-        ``{"type": "image", "url": str(image_path)}`` so that
+    Granite / Gemma 3
+        Embeds the PIL image directly in the message content as
+        ``{"type": "image", "image": pil_image}`` so that
         ``processor.apply_chat_template`` can resolve it.
+
+    Granite (path-based fallback)
+        When *pil_image* is ``None`` for the granite family, embeds the image
+        URL/path as ``{"type": "image", "url": str(image_path)}``.
+
+    Phi
+        The user content is a single plain string
+        ``"<|image_1|>\\n" + EXTRACTION_PROMPT``; no structured content list.
 
     Parameters
     ----------
     image_path:
-        Path to the image file.  Required for the ``"granite"`` family;
-        ignored for ``"smolvlm"`` (the placeholder carries no path).
+        Path to the image file.  Required for the ``"granite"`` family when
+        *pil_image* is not provided; ignored for ``"smolvlm"``.
     model_family:
-        One of ``"smolvlm"``, ``"granite"``, or ``"generic"``.
-        ``"generic"`` falls back to the SmolVLM placeholder convention.
+        One of ``"smolvlm"``, ``"granite"``, ``"gemma3"``, ``"gemma4"``,
+        ``"phi"``, or ``"generic"``.
+    pil_image:
+        Pre-loaded ``PIL.Image.Image``.  Required for the ``"gemma3"`` family;
+        used instead of the URL for ``"granite"`` if provided.
     """
+    if model_family == "gemma3":
+        image_item: dict[str, Any] = {"type": "image", "image": pil_image}
+        return [
+            {
+                "role": "user",
+                "content": [
+                    image_item,
+                    {"type": "text", "text": EXTRACTION_PROMPT},
+                ],
+            },
+        ]
     if model_family == "granite":
-        image_item: dict[str, Any] = {
-            "type": "image",
-            "url": str(image_path) if image_path is not None else "",
-        }
-    else:
-        # SmolVLM / generic: placeholder only; PIL image passed separately
-        image_item = {"type": "image"}
-
+        if pil_image is not None:
+            image_item = {"type": "image", "image": pil_image}
+        else:
+            image_item = {
+                "type": "image",
+                "url": str(image_path) if image_path is not None else "",
+            }
+        return [
+            {
+                "role": "user",
+                "content": [
+                    image_item,
+                    {"type": "text", "text": EXTRACTION_PROMPT},
+                ],
+            },
+        ]
+    if model_family == "phi":
+        return [
+            {
+                "role": "user",
+                "content": "<|image_1|>\n" + EXTRACTION_PROMPT,
+            },
+        ]
+    # SmolVLM / Gemma 4 / generic: placeholder only; PIL image passed separately
     return [
         {
             "role": "user",
             "content": [
-                image_item,
+                {"type": "image"},
                 {"type": "text", "text": EXTRACTION_PROMPT},
             ],
         },
@@ -295,64 +338,52 @@ def _log_device_info() -> None:
 
 
 def _local_hf_home() -> Path | None:
-    """Return a local copy of HF_HOME, syncing from a remote mount if needed.
+    """Return a writable local HF_HOME path, creating it if necessary.
 
-    When HF_HOME points to a blob-storage mount (slow random reads), this
-    copies the cache to /tmp/hf_cache once and returns that path.  Subsequent
-    calls within the same process return the already-copied path immediately.
+    When HF_HOME points to a blob-storage mount (slow random reads), we do NOT
+    copy the whole cache locally — that would duplicate every previously-cached
+    model and quickly exhaust local disk.  Instead we return a fresh local
+    directory and rely on ``_resolve_model_path`` to copy only the one model
+    snapshot that is actually needed for this job.
 
     Returns None if HF_HOME is not set (HuggingFace uses its default cache).
     """
     import os
-    import shutil
 
     hf_home = os.environ.get("HF_HOME")
     if not hf_home:
         return None
 
-    src = Path(hf_home)
     local = Path("/tmp/hf_cache")
-
-    if local.exists():
-        print(f"[cache] Using already-copied local HF cache at {local}", flush=True)
-        return local
-
-    if src.exists() and any(src.iterdir()):
-        print(
-            f"[cache] Copying HF cache from {src} → {local} (blob mount → local) …",
-            flush=True,
-        )
-        import time
-
-        t0 = time.monotonic()
-        shutil.copytree(src, local)
-        elapsed = time.monotonic() - t0
-        size_mb = sum(f.stat().st_size for f in local.rglob("*") if f.is_file()) / 1e6
-        print(f"[cache] Copy complete: {size_mb:.0f} MB in {elapsed:.1f}s", flush=True)
-    else:
-        print(
-            f"[cache] HF cache at {src} is empty or missing — model will be downloaded.",
-            flush=True,
-        )
+    if not local.exists():
         local.mkdir(parents=True, exist_ok=True)
-
+        print(f"[cache] Created local HF cache dir at {local}", flush=True)
+    else:
+        print(f"[cache] Reusing local HF cache dir at {local}", flush=True)
     return local
 
 
 def _resolve_model_path(model_name: str) -> str:
-    """Return the local snapshot path for *model_name* if it is cached, else *model_name*.
+    """Return the local snapshot path for *model_name*, copying from blob store if needed.
 
-    Uses ``snapshot_download(local_files_only=True)`` to resolve the exact
-    directory that ``from_pretrained`` would read from.  Passing that path
-    directly to ``from_pretrained`` guarantees loading from local disk —
-    there is no ambiguity about whether a network call is made.
+    Strategy (avoids copying the entire HF cache to local disk):
 
-    If the snapshot is not in the local cache, logs a CACHE MISS and returns
-    the original *model_name* so transformers can download it normally.
+    1. Check whether the model is already in the *local* HF cache
+       (``/tmp/hf_cache``).  If yes, return that path directly.
+    2. If not cached locally, check whether it is in the *remote* blob-store
+       cache (the original ``HF_HOME``).  If yes, copy only that model's
+       snapshot directory to the local cache, then return the local path.
+    3. If not cached anywhere, return *model_name* so that transformers
+       downloads it from HuggingFace (and writes to the local cache).
     """
+    import os
+    import shutil
+    import time
+
     from huggingface_hub import snapshot_download
     from huggingface_hub.utils import LocalEntryNotFoundError
 
+    # Step 1: already in local cache?
     try:
         local_path = snapshot_download(model_name, local_files_only=True)
         size_mb = (
@@ -360,18 +391,181 @@ def _resolve_model_path(model_name: str) -> str:
             / 1e6
         )
         print(
-            f"[cache] CACHE HIT — loading {model_name} from local snapshot:\n"
+            f"[cache] CACHE HIT (local) — {model_name}\n"
             f"        {local_path}  ({size_mb:.0f} MB)",
             flush=True,
         )
         return local_path
     except LocalEntryNotFoundError:
-        print(
-            f"[cache] CACHE MISS — {model_name} not in local cache; "
-            "downloading from HuggingFace.",
-            flush=True,
-        )
-        return model_name
+        pass
+
+    # Step 2: in the remote blob-store cache?
+    original_hf_home = os.environ.get("_ORIGINAL_HF_HOME")
+    if original_hf_home:
+        try:
+            remote_path = snapshot_download(
+                model_name,
+                local_files_only=True,
+                cache_dir=original_hf_home,
+            )
+            # Validate the snapshot is complete before using it.  A previous job
+            # that crashed mid-download can leave a partial snapshot directory that
+            # causes confusing errors later.
+            snapshot_p = Path(remote_path)
+            broken = [
+                p for p in snapshot_p.rglob("*") if p.is_symlink() and not p.exists()
+            ]
+            if not (snapshot_p / "config.json").exists() or broken:
+                print(
+                    f"[cache] WARNING — blob snapshot for {model_name} is incomplete "
+                    f"({len(broken)} broken symlink(s)); treating as a cache miss "
+                    f"and re-downloading.",
+                    flush=True,
+                )
+                raise LocalEntryNotFoundError(remote_path)
+            # Copy only this model's snapshot to local cache.
+            local_cache_dir = Path("/tmp/hf_cache")
+            # Preserve the relative sub-path (hub/models--org--name/snapshots/...)
+            rel = Path(remote_path).relative_to(Path(original_hf_home))
+            local_dest = local_cache_dir / rel
+            if not local_dest.exists():
+                print(
+                    f"[cache] CACHE HIT (blob) — copying {model_name} snapshot "
+                    f"to local disk…",
+                    flush=True,
+                )
+                t0 = time.monotonic()
+                try:
+                    shutil.copytree(remote_path, local_dest)
+                except Exception as exc:
+                    # Partial/corrupt snapshot on the blob store: some blob files
+                    # referenced by symlinks in the snapshot dir are missing.
+                    # Clean up the incomplete local copy and fall through to a
+                    # fresh download from HuggingFace.
+                    print(
+                        f"[cache] WARNING — blob snapshot copy failed ({exc}); "
+                        f"discarding partial copy and re-downloading.",
+                        flush=True,
+                    )
+                    if local_dest.exists():
+                        shutil.rmtree(local_dest, ignore_errors=True)
+                    raise LocalEntryNotFoundError(remote_path) from exc
+                elapsed = time.monotonic() - t0
+                size_mb = (
+                    sum(f.stat().st_size for f in local_dest.rglob("*") if f.is_file())
+                    / 1e6
+                )
+                print(
+                    f"[cache] Copied {size_mb:.0f} MB in {elapsed:.1f}s → {local_dest}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[cache] CACHE HIT (local, already copied) — {model_name}",
+                    flush=True,
+                )
+            return str(local_dest)
+        except LocalEntryNotFoundError:
+            pass
+
+    # Step 3: not cached anywhere — download from HuggingFace.
+    print(
+        f"[cache] CACHE MISS — {model_name} not cached; downloading from HuggingFace.",
+        flush=True,
+    )
+    return model_name
+
+
+def _uses_causal_lm(family: str) -> bool:
+    """Return True for families that require ``AutoModelForCausalLM``.
+
+    Gemma 4 and Phi use ``AutoModelForCausalLM`` rather than
+    ``AutoModelForImageTextToText``.
+    """
+    return family in ("gemma4", "phi")
+
+
+import contextlib as _contextlib
+
+
+@_contextlib.contextmanager
+def _phi4mm_tensor_workaround():
+    """Force CPU for bare tensor-creation calls during Phi-4-multimodal loading.
+
+    transformers ≥ 5 wraps ``model.__init__`` in accelerate's
+    ``init_empty_weights()`` context even when ``low_cpu_mem_usage=False``,
+    which sets PyTorch's default device to ``"meta"``.
+
+    Phi-4-multimodal's audio encoder uses ``torch.zeros`` / ``torch.arange``
+    / ``torch.tensor`` etc. **without an explicit device argument** to compute
+    layer shapes and positional encodings inside ``__init__``.  Those calls
+    therefore create meta tensors, which crash on any data access (e.g.
+    ``Tensor.item()``, arithmetic, ``.to()``).
+
+    We patch the common torch tensor-factory functions to default to CPU when
+    no device (or ``device=None``) is specified.  Registered model parameters
+    are unaffected because ``init_empty_weights`` additionally patches
+    ``nn.Module.register_parameter`` to move parameters explicitly to meta
+    after creation, regardless of what device the tensor was originally on.
+    """
+    import torch as _t
+
+    _factory_names = [
+        "tensor",
+        "zeros",
+        "ones",
+        "empty",
+        "full",
+        "arange",
+        "linspace",
+        "logspace",
+        "randn",
+        "rand",
+    ]
+    _originals: dict = {}
+    for _name in _factory_names:
+        if hasattr(_t, _name):
+            _originals[_name] = getattr(_t, _name)
+
+    def _cpu_default(orig):
+        def _wrapper(*args, **kwargs):
+            # Redirect to CPU when device is absent or explicitly None.
+            if kwargs.get("device", None) is None:
+                kwargs["device"] = "cpu"
+            return orig(*args, **kwargs)
+
+        return _wrapper
+
+    for _name, _orig in _originals.items():
+        setattr(_t, _name, _cpu_default(_orig))
+
+    # transformers 5.x changed get_expanded_tied_weights_keys to expect a dict
+    # from get_tied_weights_keys_mapping(), but Phi-4-multimodal's custom code
+    # still sets _tied_weights_keys as a list (old API).  Patch the base class
+    # to gracefully return [] when the dict-access fails.
+    try:
+        from transformers import PreTrainedModel as _PTM
+
+        _orig_get_expanded = _PTM.get_expanded_tied_weights_keys
+
+        def _patched_get_expanded(self_m, all_submodels=False):
+            try:
+                return _orig_get_expanded(self_m, all_submodels=all_submodels)
+            except AttributeError:
+                return []
+
+        _PTM.get_expanded_tied_weights_keys = _patched_get_expanded
+        _patched_tied = True
+    except Exception:
+        _patched_tied = False
+
+    try:
+        yield
+    finally:
+        for _name, _orig in _originals.items():
+            setattr(_t, _name, _orig)
+        if _patched_tied:
+            _PTM.get_expanded_tied_weights_keys = _orig_get_expanded
 
 
 def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
@@ -387,7 +581,11 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
 
     try:
         import torch
-        from transformers import AutoModelForImageTextToText, AutoProcessor
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoModelForImageTextToText,
+            AutoProcessor,
+        )
     except ImportError as exc:
         raise ImportError(
             "Install the 'train' extras to run inference: " "pip install -e '.[train]'"
@@ -395,15 +593,52 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
 
     _log_device_info()
 
-    # Copy HF cache to local disk to avoid slow random reads over blob mount.
-    # Save the original path so we can sync new downloads back afterwards.
+    # Point HF_HOME at a local writable directory to avoid slow blob-mount reads.
+    # Save the original blob-store path as _ORIGINAL_HF_HOME so _resolve_model_path
+    # can copy only the required model snapshot across (not the whole cache).
     original_hf_home = os.environ.get("HF_HOME")
     local_cache = _local_hf_home()
     if local_cache is not None:
         os.environ["HF_HOME"] = str(local_cache)
+        # huggingface_hub reads HF_HOME once at import time into the module-level
+        # constant HUGGINGFACE_HUB_CACHE.  Setting os.environ afterwards has no
+        # effect on that constant.  Patch it directly so snapshot_download and
+        # from_pretrained use the local path even if the library was imported
+        # before this function ran.
+        try:
+            import huggingface_hub.constants as _hfc
+
+            _hfc.HF_HOME = str(local_cache)
+            _hfc.HUGGINGFACE_HUB_CACHE = str(local_cache / "hub")
+            _hfc.HF_HUB_CACHE = str(local_cache / "hub")
+        except Exception:
+            pass
         if original_hf_home and Path(original_hf_home) != local_cache:
             os.environ["_ORIGINAL_HF_HOME"] = original_hf_home
         print(f"[cache] HF_HOME set to local cache: {local_cache}", flush=True)
+
+    # Cache dir to pass explicitly to from_pretrained — bypasses any stale
+    # module-level constant that slipped through the patch above.
+    hf_cache_dir: str | None = str(local_cache / "hub") if local_cache else None
+
+    family = detect_model_family(config.model_name)
+    use_causal = _uses_causal_lm(family)
+    model_cls = AutoModelForCausalLM if use_causal else AutoModelForImageTextToText
+
+    # Phi models require trust_remote_code and work best without flash attention
+    # when flash_attn is not installed; use eager implementation as a safe default.
+    # Phi-4 multimodal's custom init code calls .item() during weight loading.
+    # newer transformers defaults low_cpu_mem_usage=True, which constructs weights
+    # on the meta device first — triggering the error.  Disable it for Phi.
+    extra_kwargs: dict[str, Any] = {"trust_remote_code": True}
+    if family == "phi":
+        extra_kwargs["_attn_implementation"] = "eager"
+        extra_kwargs["low_cpu_mem_usage"] = False
+    if hf_cache_dir:
+        extra_kwargs["cache_dir"] = hf_cache_dir
+
+    # Determine device_map: None for Phi (move manually after load), else config value.
+    model_device_map: str | None = None if family == "phi" else config.device
 
     if _is_adapter_path(config.model_name):
         import json as _json
@@ -415,26 +650,52 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         base_model_name = adapter_cfg["base_model_name_or_path"]
         resolved_name = _resolve_model_path(base_model_name)
 
-        processor = AutoProcessor.from_pretrained(resolved_name, trust_remote_code=True)
-        base = AutoModelForImageTextToText.from_pretrained(
-            resolved_name,
-            torch_dtype=_gpu_dtype(),
-            device_map=config.device,
-            trust_remote_code=True,
+        # Phi processor needs num_crops=16 for single-image OCR quality.
+        proc_kwargs: dict[str, Any] = {"trust_remote_code": True}
+        if family == "phi":
+            proc_kwargs["num_crops"] = 16
+        if hf_cache_dir:
+            proc_kwargs["cache_dir"] = hf_cache_dir
+        processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
+        _phi4mm_ctx = (
+            _phi4mm_tensor_workaround()
+            if family == "phi"
+            else _contextlib.nullcontext()
         )
+        with _phi4mm_ctx:
+            base = model_cls.from_pretrained(
+                resolved_name,
+                torch_dtype=_gpu_dtype(),
+                device_map=model_device_map,
+                **extra_kwargs,
+            )
         model = PeftModel.from_pretrained(base, str(adapter_dir))
     else:
         resolved_name = _resolve_model_path(config.model_name)
-        processor = AutoProcessor.from_pretrained(
-            resolved_name,
-            trust_remote_code=True,
+        proc_kwargs = {"trust_remote_code": True}
+        if family == "phi":
+            proc_kwargs["num_crops"] = 16
+        if hf_cache_dir:
+            proc_kwargs["cache_dir"] = hf_cache_dir
+        processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
+        _phi4mm_ctx = (
+            _phi4mm_tensor_workaround()
+            if family == "phi"
+            else _contextlib.nullcontext()
         )
-        model = AutoModelForImageTextToText.from_pretrained(
-            resolved_name,
-            torch_dtype=_gpu_dtype(),
-            device_map=config.device,
-            trust_remote_code=True,
-        )
+        with _phi4mm_ctx:
+            model = model_cls.from_pretrained(
+                resolved_name,
+                torch_dtype=_gpu_dtype(),
+                device_map=model_device_map,
+                **extra_kwargs,
+            )
+
+    # For Phi: device_map was suppressed to avoid meta-tensor errors during init;
+    # move the fully-initialised model to the target device now.
+    if family == "phi":
+        target = config.device if config.device != "auto" else "cuda"
+        model = model.to(target)
 
     model.eval()
 
@@ -521,9 +782,10 @@ def extract_grid_batch_with_model(
     if do_sample:
         generate_kwargs["temperature"] = config.temperature
 
-    if family == "granite":
-        # Granite encodes the image URL in the message; process one at a time
-        # and concatenate — batched apply_chat_template is not well-supported.
+    if family in ("granite", "gemma3", "gemma4", "phi"):
+        # These families require per-image processing: Granite and Gemma 3 embed
+        # the image in the message, Gemma 4 and Phi have processor APIs that are
+        # not straightforwardly batched.
         return [
             extract_grid_with_model(p, config, processor, model, family)
             for p in image_paths
@@ -622,7 +884,7 @@ def extract_grid_with_model(
         ) from exc
 
     image = PILImage.open(image_path).convert("RGB")
-    messages = build_messages(image_path, model_family=family)
+    messages = build_messages(image_path, model_family=family, pil_image=image)
 
     do_sample = config.temperature > 0.0
     generate_kwargs: dict[str, Any] = dict(
@@ -632,16 +894,48 @@ def extract_grid_with_model(
     if do_sample:
         generate_kwargs["temperature"] = config.temperature
 
-    if family == "granite":
-        inputs = processor.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-        ).to(model.device)
-    else:
+    if family in ("granite", "gemma3"):
+        # These families embed the image directly in the message; the processor
+        # tokenises everything in one apply_chat_template call.
+        # Gemma 3: pass do_pan_and_scan=True so the processor tiles wide/tall
+        # scans into patches, preventing detail loss at fixed 896×896 encoding.
+        template_kwargs: dict[str, Any] = {
+            "add_generation_prompt": True,
+            "tokenize": True,
+            "return_dict": True,
+            "return_tensors": "pt",
+        }
+        if family == "gemma3":
+            template_kwargs["do_pan_and_scan"] = True
+        inputs = processor.apply_chat_template(messages, **template_kwargs).to(
+            model.device
+        )
+    elif family == "gemma4":
+        # Gemma 4: two-step — tokenise text, then pass PIL image separately.
+        # disable_thinking avoids outputting reasoning tokens.
         text_prompt: str = processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        inputs = processor(
+            text=text_prompt,
+            images=[image],
+            return_tensors="pt",
+        )
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+    elif family == "phi":
+        # Phi: apply_chat_template on tokenizer, then processor for vision tokens.
+        prompt: str = processor.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        inputs = processor(prompt, [image], return_tensors="pt").to(model.device)
+    else:
+        # SmolVLM / generic
+        text_prompt = processor.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True,
@@ -654,7 +948,14 @@ def extract_grid_with_model(
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.inference_mode():
-        output_ids = model.generate(**inputs, **generate_kwargs)
+        if family == "phi":
+            output_ids = model.generate(
+                **inputs,
+                eos_token_id=processor.tokenizer.eos_token_id,
+                **generate_kwargs,
+            )
+        else:
+            output_ids = model.generate(**inputs, **generate_kwargs)
 
     input_len = inputs["input_ids"].shape[1]
     raw_text: str = processor.batch_decode(

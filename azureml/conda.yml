@@ -22,3 +22,4 @@ dependencies:
       # (SmolVLMImageProcessor was added in 4.49.0, not 4.48).
       - transformers>=4.49.0
       - trl
+      - scipy

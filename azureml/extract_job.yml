@@ -71,5 +71,10 @@ environment_variables:
   # Model to use.  "smolvlm" resolves to HuggingFaceTB/SmolVLM-500M-Instruct.
   WEATHER_MODEL: smolvlm
 
+  # HuggingFace token — required for gated models (Gemma 3/4, Llama, etc.).
+  # Set HF_TOKEN in azureml/config.env; aml_submit.sh passes it at submission time.
+  # Alternatively, store it as a Key Vault secret and uncomment the line below:
+  # HF_TOKEN: ${{secrets.hf-token}}
+
   # Point HuggingFace cache at shared storage so each node does not re-download.
   # Overridden by aml_submit.sh via --set inputs.hf_cache.path=...

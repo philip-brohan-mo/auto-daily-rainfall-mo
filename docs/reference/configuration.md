@@ -30,6 +30,20 @@ Controls which model is used for inference.
 | `temperature` | `0.0` | Sampling temperature (0 = greedy) |
 | `device` | `auto` | Device placement (`auto`, `cpu`, `cuda`) |
 
+### Model presets
+
+The `--model` CLI flag accepts short preset names as well as full HuggingFace
+model IDs or local adapter paths.
+
+| Preset | Model ID | Notes |
+|--------|----------|-------|
+| `smolvlm` | `HuggingFaceTB/SmolVLM-500M-Instruct` | Lightweight baseline (~500 M params) |
+| `granite` | `ibm-granite/granite-vision-3.2-2b` | IBM Granite Vision 3.2, 2 B |
+| `gemma3` | `google/gemma-3-4b-it` | Google Gemma 3, 4 B; uses pan-and-scan tiling for high-res scans |
+| `gemma4` | `google/gemma-4-E4B-it` | Google Gemma 4, 4 B edge; variable-resolution token budget |
+| `phi3v` | `microsoft/Phi-3.5-vision-instruct` | Microsoft Phi-3.5 Vision, ~4 B; `trust_remote_code` required |
+| `phi4mm` | `microsoft/Phi-4-multimodal-instruct` | Microsoft Phi-4 Multimodal; `trust_remote_code` required |
+
 ## `TrainingConfig`
 
 Controls the fine-tuning process.

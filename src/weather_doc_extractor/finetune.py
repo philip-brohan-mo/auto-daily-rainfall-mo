@@ -23,7 +23,6 @@ from weather_doc_extractor.config import ModelConfig, TrainingConfig
 from weather_doc_extractor.inference import EXTRACTION_PROMPT, detect_model_family
 from weather_doc_extractor.schemas import DailyRainfallRecord
 
-
 # ---------------------------------------------------------------------------
 # Ground-truth serialisation
 # ---------------------------------------------------------------------------
@@ -70,24 +69,50 @@ def build_training_example(
     pil_image = PILImage.open(record.image_path).convert("RGB")
     answer = _ground_truth_json(record)
 
-    if family == "granite":
+    if family in ("granite", "gemma3"):
+        # These families embed the PIL image directly in the message so the
+        # processor can resolve it during apply_chat_template.
         image_item: dict[str, Any] = {"type": "image", "image": pil_image}
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": [
+                    image_item,
+                    {"type": "text", "text": EXTRACTION_PROMPT},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": answer}],
+            },
+        ]
+    elif family == "phi":
+        # Phi uses plain string content with a special image token prefix.
+        messages = [
+            {
+                "role": "user",
+                "content": "<|image_1|>\n" + EXTRACTION_PROMPT,
+            },
+            {
+                "role": "assistant",
+                "content": answer,
+            },
+        ]
     else:
-        image_item = {"type": "image"}
-
-    messages: list[dict[str, Any]] = [
-        {
-            "role": "user",
-            "content": [
-                image_item,
-                {"type": "text", "text": EXTRACTION_PROMPT},
-            ],
-        },
-        {
-            "role": "assistant",
-            "content": [{"type": "text", "text": answer}],
-        },
-    ]
+        # SmolVLM / Gemma 4 / generic: placeholder only; PIL passed separately.
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": EXTRACTION_PROMPT},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": answer}],
+            },
+        ]
     return {"image": pil_image, "messages": messages}
 
 
@@ -115,9 +140,19 @@ def _make_collate_fn(processor: Any, family: str):
         2. ``processor(text=..., images=...)`` → tokenised batch
         3. Mask pad and image tokens in labels.
 
-    Granite
+    Granite / Gemma 3
         1. ``apply_chat_template(tokenize=True, return_dict=True)`` per example
         2. Pad and stack tensors across the batch.
+        3. Mask pad tokens in labels.
+        (Gemma 3 additionally passes ``do_pan_and_scan=True``.)
+
+    Gemma 4
+        Same pipeline as SmolVLM but passes ``enable_thinking=False`` to
+        ``apply_chat_template`` so reasoning tokens are suppressed.
+
+    Phi
+        1. ``processor.tokenizer.apply_chat_template(tokenize=False)`` → string
+        2. ``processor(prompt, [image], return_tensors="pt")`` → inputs
         3. Mask pad tokens in labels.
     """
 
@@ -190,7 +225,122 @@ def _make_collate_fn(processor: Any, family: str):
         batch["labels"] = labels
         return batch
 
-    return _collate_smolvlm if family != "granite" else _collate_granite
+    def _collate_gemma3(examples: list[dict[str, Any]]) -> dict[str, Any]:
+        """Gemma 3 collate: embed PIL image in message, use do_pan_and_scan."""
+        import torch
+        from torch.nn.utils.rnn import pad_sequence
+
+        batches = [
+            processor.apply_chat_template(
+                ex["messages"],
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                add_generation_prompt=False,
+                do_pan_and_scan=True,
+            )
+            for ex in examples
+        ]
+
+        pad_id = processor.tokenizer.pad_token_id or 0
+        input_ids = pad_sequence(
+            [b["input_ids"][0] for b in batches],
+            batch_first=True,
+            padding_value=pad_id,
+        )
+        attention_mask = pad_sequence(
+            [b["attention_mask"][0] for b in batches],
+            batch_first=True,
+            padding_value=0,
+        )
+        pixel_values = torch.cat([b["pixel_values"] for b in batches], dim=0)
+
+        batch = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "pixel_values": pixel_values,
+        }
+        labels = input_ids.clone()
+        labels[labels == pad_id] = -100
+        batch["labels"] = labels
+        return batch
+
+    def _collate_gemma4(examples: list[dict[str, Any]]) -> dict[str, Any]:
+        """Gemma 4 collate: two-step tokenise; disable thinking tokens."""
+        import torch
+
+        images = [ex["image"] for ex in examples]
+        texts = [
+            processor.apply_chat_template(
+                ex["messages"],
+                tokenize=False,
+                add_generation_prompt=False,
+                enable_thinking=False,
+            )
+            for ex in examples
+        ]
+        batch = processor(
+            text=texts,
+            images=images,
+            return_tensors="pt",
+            padding=True,
+        )
+        labels = batch["input_ids"].clone()
+        labels[labels == processor.tokenizer.pad_token_id] = -100
+        if hasattr(processor, "image_token"):
+            img_tok_id = processor.tokenizer.convert_tokens_to_ids(
+                processor.image_token
+            )
+            labels[labels == img_tok_id] = -100
+        batch["labels"] = labels
+        return batch
+
+    def _collate_phi(examples: list[dict[str, Any]]) -> dict[str, Any]:
+        """Phi collate: tokenizer for text, processor for vision tokens."""
+        import torch
+        from torch.nn.utils.rnn import pad_sequence
+
+        results = []
+        for ex in examples:
+            prompt = processor.tokenizer.apply_chat_template(
+                ex["messages"],
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+            enc = processor(prompt, [ex["image"]], return_tensors="pt")
+            results.append(enc)
+
+        pad_id = processor.tokenizer.pad_token_id or 0
+        input_ids = pad_sequence(
+            [r["input_ids"][0] for r in results],
+            batch_first=True,
+            padding_value=pad_id,
+        )
+        attention_mask = pad_sequence(
+            [r["attention_mask"][0] for r in results],
+            batch_first=True,
+            padding_value=0,
+        )
+        pixel_values = torch.cat([r["pixel_values"] for r in results], dim=0)
+        image_sizes = torch.cat([r["image_sizes"] for r in results], dim=0)
+
+        labels = input_ids.clone()
+        labels[labels == pad_id] = -100
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "pixel_values": pixel_values,
+            "image_sizes": image_sizes,
+            "labels": labels,
+        }
+
+    _dispatch = {
+        "granite": _collate_granite,
+        "gemma3": _collate_gemma3,
+        "gemma4": _collate_gemma4,
+        "phi": _collate_phi,
+    }
+    return _dispatch.get(family, _collate_smolvlm)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +372,11 @@ def run_finetune(
     try:
         import torch
         from peft import LoraConfig
-        from transformers import AutoModelForImageTextToText, AutoProcessor
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoModelForImageTextToText,
+            AutoProcessor,
+        )
         from trl import SFTConfig, SFTTrainer
     except ImportError as exc:
         raise ImportError(
@@ -230,6 +384,11 @@ def run_finetune(
         ) from exc
 
     family = detect_model_family(model_config.model_name)
+    # Gemma 4 and Phi require AutoModelForCausalLM; all others use
+    # AutoModelForImageTextToText.
+    use_causal_lm = family in ("gemma4", "phi")
+    model_cls = AutoModelForCausalLM if use_causal_lm else AutoModelForImageTextToText
+
     paired = [r for r in records if r.grid is not None]
 
     if not paired:
@@ -246,16 +405,20 @@ def run_finetune(
     eval_examples = build_training_examples(eval_records, family)
 
     # Load processor and model
-    processor = AutoProcessor.from_pretrained(
-        model_config.model_name, trust_remote_code=True
-    )
+    proc_kwargs: dict[str, Any] = {"trust_remote_code": True}
+    if family == "phi":
+        proc_kwargs["num_crops"] = 16
+    processor = AutoProcessor.from_pretrained(model_config.model_name, **proc_kwargs)
+
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-    model = AutoModelForImageTextToText.from_pretrained(
-        model_config.model_name,
-        torch_dtype=dtype,
-        device_map=model_config.device,
-        trust_remote_code=True,
-    )
+    model_kwargs: dict[str, Any] = {
+        "torch_dtype": dtype,
+        "device_map": model_config.device,
+        "trust_remote_code": True,
+    }
+    if family == "phi":
+        model_kwargs["_attn_implementation"] = "eager"
+    model = model_cls.from_pretrained(model_config.model_name, **model_kwargs)
 
     # LoRA configuration
     target_modules = train_config.lora_target_modules or "all-linear"
