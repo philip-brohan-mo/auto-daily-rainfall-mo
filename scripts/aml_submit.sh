@@ -209,6 +209,10 @@ case "$COMMAND" in
             --set inputs.images_dir.path="$IMAGES_URI" \
             --set inputs.transcriptions_dir.path="$TRANSCRIPTIONS_URI" \
             --set outputs.checkpoints.path="$OUTPUTS_URI/checkpoints" \
+            --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
+            ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
+            ${HF_TOKEN:+--set environment_variables.HF_TOKEN="$HF_TOKEN"} \
+            --set display_name="finetune-${MODEL_SLUG}" \
             --query name --output tsv
         echo "Finetune job submitted."
         ;;

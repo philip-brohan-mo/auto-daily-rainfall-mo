@@ -37,7 +37,7 @@ _FAMILY_PATTERNS: list[tuple[str, list[str]]] = [
     ("gemma3", ["gemma-3"]),
     ("smolvlm", ["smolvlm", "idefics"]),
     ("granite", ["granite"]),
-    ("phi", ["phi-3.5-vision", "phi-4-multimodal"]),
+    ("ministral", ["mistral-small-3", "pixtral"]),
 ]
 
 
@@ -116,10 +116,6 @@ def build_messages(
         When *pil_image* is ``None`` for the granite family, embeds the image
         URL/path as ``{"type": "image", "url": str(image_path)}``.
 
-    Phi
-        The user content is a single plain string
-        ``"<|image_1|>\\n" + EXTRACTION_PROMPT``; no structured content list.
-
     Parameters
     ----------
     image_path:
@@ -127,7 +123,7 @@ def build_messages(
         *pil_image* is not provided; ignored for ``"smolvlm"``.
     model_family:
         One of ``"smolvlm"``, ``"granite"``, ``"gemma3"``, ``"gemma4"``,
-        ``"phi"``, or ``"generic"``.
+        or ``"generic"``.
     pil_image:
         Pre-loaded ``PIL.Image.Image``.  Required for the ``"gemma3"`` family;
         used instead of the URL for ``"granite"`` if provided.
@@ -158,13 +154,6 @@ def build_messages(
                     image_item,
                     {"type": "text", "text": EXTRACTION_PROMPT},
                 ],
-            },
-        ]
-    if model_family == "phi":
-        return [
-            {
-                "role": "user",
-                "content": "<|image_1|>\n" + EXTRACTION_PROMPT,
             },
         ]
     # SmolVLM / Gemma 4 / generic: placeholder only; PIL image passed separately
@@ -479,93 +468,10 @@ def _resolve_model_path(model_name: str) -> str:
 def _uses_causal_lm(family: str) -> bool:
     """Return True for families that require ``AutoModelForCausalLM``.
 
-    Gemma 4 and Phi use ``AutoModelForCausalLM`` rather than
+    Gemma 4 uses ``AutoModelForCausalLM`` rather than
     ``AutoModelForImageTextToText``.
     """
-    return family in ("gemma4", "phi")
-
-
-import contextlib as _contextlib
-
-
-@_contextlib.contextmanager
-def _phi4mm_tensor_workaround():
-    """Force CPU for bare tensor-creation calls during Phi-4-multimodal loading.
-
-    transformers ≥ 5 wraps ``model.__init__`` in accelerate's
-    ``init_empty_weights()`` context even when ``low_cpu_mem_usage=False``,
-    which sets PyTorch's default device to ``"meta"``.
-
-    Phi-4-multimodal's audio encoder uses ``torch.zeros`` / ``torch.arange``
-    / ``torch.tensor`` etc. **without an explicit device argument** to compute
-    layer shapes and positional encodings inside ``__init__``.  Those calls
-    therefore create meta tensors, which crash on any data access (e.g.
-    ``Tensor.item()``, arithmetic, ``.to()``).
-
-    We patch the common torch tensor-factory functions to default to CPU when
-    no device (or ``device=None``) is specified.  Registered model parameters
-    are unaffected because ``init_empty_weights`` additionally patches
-    ``nn.Module.register_parameter`` to move parameters explicitly to meta
-    after creation, regardless of what device the tensor was originally on.
-    """
-    import torch as _t
-
-    _factory_names = [
-        "tensor",
-        "zeros",
-        "ones",
-        "empty",
-        "full",
-        "arange",
-        "linspace",
-        "logspace",
-        "randn",
-        "rand",
-    ]
-    _originals: dict = {}
-    for _name in _factory_names:
-        if hasattr(_t, _name):
-            _originals[_name] = getattr(_t, _name)
-
-    def _cpu_default(orig):
-        def _wrapper(*args, **kwargs):
-            # Redirect to CPU when device is absent or explicitly None.
-            if kwargs.get("device", None) is None:
-                kwargs["device"] = "cpu"
-            return orig(*args, **kwargs)
-
-        return _wrapper
-
-    for _name, _orig in _originals.items():
-        setattr(_t, _name, _cpu_default(_orig))
-
-    # transformers 5.x changed get_expanded_tied_weights_keys to expect a dict
-    # from get_tied_weights_keys_mapping(), but Phi-4-multimodal's custom code
-    # still sets _tied_weights_keys as a list (old API).  Patch the base class
-    # to gracefully return [] when the dict-access fails.
-    try:
-        from transformers import PreTrainedModel as _PTM
-
-        _orig_get_expanded = _PTM.get_expanded_tied_weights_keys
-
-        def _patched_get_expanded(self_m, all_submodels=False):
-            try:
-                return _orig_get_expanded(self_m, all_submodels=all_submodels)
-            except AttributeError:
-                return []
-
-        _PTM.get_expanded_tied_weights_keys = _patched_get_expanded
-        _patched_tied = True
-    except Exception:
-        _patched_tied = False
-
-    try:
-        yield
-    finally:
-        for _name, _orig in _originals.items():
-            setattr(_t, _name, _orig)
-        if _patched_tied:
-            _PTM.get_expanded_tied_weights_keys = _orig_get_expanded
+    return family == "gemma4"
 
 
 def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
@@ -625,20 +531,11 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
     use_causal = _uses_causal_lm(family)
     model_cls = AutoModelForCausalLM if use_causal else AutoModelForImageTextToText
 
-    # Phi models require trust_remote_code and work best without flash attention
-    # when flash_attn is not installed; use eager implementation as a safe default.
-    # Phi-4 multimodal's custom init code calls .item() during weight loading.
-    # newer transformers defaults low_cpu_mem_usage=True, which constructs weights
-    # on the meta device first — triggering the error.  Disable it for Phi.
     extra_kwargs: dict[str, Any] = {"trust_remote_code": True}
-    if family == "phi":
-        extra_kwargs["_attn_implementation"] = "eager"
-        extra_kwargs["low_cpu_mem_usage"] = False
     if hf_cache_dir:
         extra_kwargs["cache_dir"] = hf_cache_dir
 
-    # Determine device_map: None for Phi (move manually after load), else config value.
-    model_device_map: str | None = None if family == "phi" else config.device
+    model_device_map: str | None = config.device
 
     if _is_adapter_path(config.model_name):
         import json as _json
@@ -650,52 +547,29 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         base_model_name = adapter_cfg["base_model_name_or_path"]
         resolved_name = _resolve_model_path(base_model_name)
 
-        # Phi processor needs num_crops=16 for single-image OCR quality.
         proc_kwargs: dict[str, Any] = {"trust_remote_code": True}
-        if family == "phi":
-            proc_kwargs["num_crops"] = 16
         if hf_cache_dir:
             proc_kwargs["cache_dir"] = hf_cache_dir
         processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
-        _phi4mm_ctx = (
-            _phi4mm_tensor_workaround()
-            if family == "phi"
-            else _contextlib.nullcontext()
+        base = model_cls.from_pretrained(
+            resolved_name,
+            torch_dtype=_gpu_dtype(),
+            device_map=model_device_map,
+            **extra_kwargs,
         )
-        with _phi4mm_ctx:
-            base = model_cls.from_pretrained(
-                resolved_name,
-                torch_dtype=_gpu_dtype(),
-                device_map=model_device_map,
-                **extra_kwargs,
-            )
         model = PeftModel.from_pretrained(base, str(adapter_dir))
     else:
         resolved_name = _resolve_model_path(config.model_name)
         proc_kwargs = {"trust_remote_code": True}
-        if family == "phi":
-            proc_kwargs["num_crops"] = 16
         if hf_cache_dir:
             proc_kwargs["cache_dir"] = hf_cache_dir
         processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
-        _phi4mm_ctx = (
-            _phi4mm_tensor_workaround()
-            if family == "phi"
-            else _contextlib.nullcontext()
+        model = model_cls.from_pretrained(
+            resolved_name,
+            torch_dtype=_gpu_dtype(),
+            device_map=model_device_map,
+            **extra_kwargs,
         )
-        with _phi4mm_ctx:
-            model = model_cls.from_pretrained(
-                resolved_name,
-                torch_dtype=_gpu_dtype(),
-                device_map=model_device_map,
-                **extra_kwargs,
-            )
-
-    # For Phi: device_map was suppressed to avoid meta-tensor errors during init;
-    # move the fully-initialised model to the target device now.
-    if family == "phi":
-        target = config.device if config.device != "auto" else "cuda"
-        model = model.to(target)
 
     model.eval()
 
@@ -782,9 +656,9 @@ def extract_grid_batch_with_model(
     if do_sample:
         generate_kwargs["temperature"] = config.temperature
 
-    if family in ("granite", "gemma3", "gemma4", "phi"):
+    if family in ("granite", "gemma3", "gemma4"):
         # These families require per-image processing: Granite and Gemma 3 embed
-        # the image in the message, Gemma 4 and Phi have processor APIs that are
+        # the image in the message, Gemma 4 has a processor API that is
         # not straightforwardly batched.
         return [
             extract_grid_with_model(p, config, processor, model, family)
@@ -925,14 +799,6 @@ def extract_grid_with_model(
             return_tensors="pt",
         )
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
-    elif family == "phi":
-        # Phi: apply_chat_template on tokenizer, then processor for vision tokens.
-        prompt: str = processor.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-        inputs = processor(prompt, [image], return_tensors="pt").to(model.device)
     else:
         # SmolVLM / generic
         text_prompt = processor.apply_chat_template(
@@ -948,14 +814,7 @@ def extract_grid_with_model(
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.inference_mode():
-        if family == "phi":
-            output_ids = model.generate(
-                **inputs,
-                eos_token_id=processor.tokenizer.eos_token_id,
-                **generate_kwargs,
-            )
-        else:
-            output_ids = model.generate(**inputs, **generate_kwargs)
+        output_ids = model.generate(**inputs, **generate_kwargs)
 
     input_len = inputs["input_ids"].shape[1]
     raw_text: str = processor.batch_decode(

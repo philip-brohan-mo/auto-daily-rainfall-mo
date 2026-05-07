@@ -86,18 +86,6 @@ def build_training_example(
                 "content": [{"type": "text", "text": answer}],
             },
         ]
-    elif family == "phi":
-        # Phi uses plain string content with a special image token prefix.
-        messages = [
-            {
-                "role": "user",
-                "content": "<|image_1|>\n" + EXTRACTION_PROMPT,
-            },
-            {
-                "role": "assistant",
-                "content": answer,
-            },
-        ]
     else:
         # SmolVLM / Gemma 4 / generic: placeholder only; PIL passed separately.
         messages = [
@@ -149,11 +137,6 @@ def _make_collate_fn(processor: Any, family: str):
     Gemma 4
         Same pipeline as SmolVLM but passes ``enable_thinking=False`` to
         ``apply_chat_template`` so reasoning tokens are suppressed.
-
-    Phi
-        1. ``processor.tokenizer.apply_chat_template(tokenize=False)`` → string
-        2. ``processor(prompt, [image], return_tensors="pt")`` → inputs
-        3. Mask pad tokens in labels.
     """
 
     def _collate_smolvlm(examples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -220,6 +203,12 @@ def _make_collate_fn(processor: Any, family: str):
             "attention_mask": attention_mask,
             "pixel_values": pixel_values,
         }
+        # Granite uses the llava_next architecture which requires image_sizes
+        # in the forward call to split multi-patch pixel_values back into per-image
+        # feature grids.  The processor returns it; pass it through.
+        if "image_sizes" in batches[0]:
+            image_sizes = torch.cat([b["image_sizes"] for b in batches], dim=0)
+            batch["image_sizes"] = image_sizes
         labels = input_ids.clone()
         labels[labels == pad_id] = -100
         batch["labels"] = labels
@@ -295,50 +284,10 @@ def _make_collate_fn(processor: Any, family: str):
         batch["labels"] = labels
         return batch
 
-    def _collate_phi(examples: list[dict[str, Any]]) -> dict[str, Any]:
-        """Phi collate: tokenizer for text, processor for vision tokens."""
-        import torch
-        from torch.nn.utils.rnn import pad_sequence
-
-        results = []
-        for ex in examples:
-            prompt = processor.tokenizer.apply_chat_template(
-                ex["messages"],
-                tokenize=False,
-                add_generation_prompt=False,
-            )
-            enc = processor(prompt, [ex["image"]], return_tensors="pt")
-            results.append(enc)
-
-        pad_id = processor.tokenizer.pad_token_id or 0
-        input_ids = pad_sequence(
-            [r["input_ids"][0] for r in results],
-            batch_first=True,
-            padding_value=pad_id,
-        )
-        attention_mask = pad_sequence(
-            [r["attention_mask"][0] for r in results],
-            batch_first=True,
-            padding_value=0,
-        )
-        pixel_values = torch.cat([r["pixel_values"] for r in results], dim=0)
-        image_sizes = torch.cat([r["image_sizes"] for r in results], dim=0)
-
-        labels = input_ids.clone()
-        labels[labels == pad_id] = -100
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "pixel_values": pixel_values,
-            "image_sizes": image_sizes,
-            "labels": labels,
-        }
-
     _dispatch = {
         "granite": _collate_granite,
         "gemma3": _collate_gemma3,
         "gemma4": _collate_gemma4,
-        "phi": _collate_phi,
     }
     return _dispatch.get(family, _collate_smolvlm)
 
@@ -384,9 +333,9 @@ def run_finetune(
         ) from exc
 
     family = detect_model_family(model_config.model_name)
-    # Gemma 4 and Phi require AutoModelForCausalLM; all others use
+    # Gemma 4 requires AutoModelForCausalLM; all others use
     # AutoModelForImageTextToText.
-    use_causal_lm = family in ("gemma4", "phi")
+    use_causal_lm = family == "gemma4"
     model_cls = AutoModelForCausalLM if use_causal_lm else AutoModelForImageTextToText
 
     paired = [r for r in records if r.grid is not None]
@@ -406,8 +355,6 @@ def run_finetune(
 
     # Load processor and model
     proc_kwargs: dict[str, Any] = {"trust_remote_code": True}
-    if family == "phi":
-        proc_kwargs["num_crops"] = 16
     processor = AutoProcessor.from_pretrained(model_config.model_name, **proc_kwargs)
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
@@ -416,8 +363,6 @@ def run_finetune(
         "device_map": model_config.device,
         "trust_remote_code": True,
     }
-    if family == "phi":
-        model_kwargs["_attn_implementation"] = "eager"
     model = model_cls.from_pretrained(model_config.model_name, **model_kwargs)
 
     # LoRA configuration

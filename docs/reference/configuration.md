@@ -41,8 +41,7 @@ model IDs or local adapter paths.
 | `granite` | `ibm-granite/granite-vision-3.2-2b` | IBM Granite Vision 3.2, 2 B |
 | `gemma3` | `google/gemma-3-4b-it` | Google Gemma 3, 4 B; uses pan-and-scan tiling for high-res scans |
 | `gemma4` | `google/gemma-4-E4B-it` | Google Gemma 4, 4 B edge; variable-resolution token budget |
-| `phi3v` | `microsoft/Phi-3.5-vision-instruct` | Microsoft Phi-3.5 Vision, ~4 B; `trust_remote_code` required |
-| `phi4mm` | `microsoft/Phi-4-multimodal-instruct` | Microsoft Phi-4 Multimodal; `trust_remote_code` required |
+| `ministral` | `mistralai/Mistral-Small-3.1-24B-Instruct-2503` | Mistral Small 3.1, 24 B; Pixtral vision encoder, 128 k context |
 
 ## `TrainingConfig`
 

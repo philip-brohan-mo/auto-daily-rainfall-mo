@@ -66,5 +66,8 @@ weather-extract extract \
 - Start with `--lora-r 8` (the default).  Increase to `16` or `32` if the
   model underfits.
 - Use `--eval-split 0.15` to monitor validation loss and catch overfitting.
-- The `smolvlm` model (500 M) trains in minutes on a modern GPU; `granite`
-  (2 B) takes longer but may generalise better.
+- `smolvlm` (500 M) trains in minutes on a modern GPU; `granite` (2 B) and
+  `gemma3` / `gemma4` (4 B) take longer but tend to generalise better.
+  `ministral` (24 B) requires a large GPU (A100 80 GB or equivalent).
+- Gated models (`gemma3`, `gemma4`, `ministral`) require a HuggingFace token —
+  set `HF_TOKEN` in your environment before launching.

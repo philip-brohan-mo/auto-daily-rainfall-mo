@@ -37,15 +37,15 @@ class CliTests(unittest.TestCase):
         self.assertIn("SmolVLM", MODEL_PRESETS["smolvlm"])
         self.assertIn("granite", MODEL_PRESETS["granite"])
 
-    def test_model_presets_contains_gemma_and_phi(self) -> None:
+    def test_model_presets_contains_gemma(self) -> None:
         self.assertIn("gemma3", MODEL_PRESETS)
         self.assertIn("gemma4", MODEL_PRESETS)
-        self.assertIn("phi3v", MODEL_PRESETS)
-        self.assertIn("phi4mm", MODEL_PRESETS)
         self.assertIn("gemma-3", MODEL_PRESETS["gemma3"])
         self.assertIn("gemma-4", MODEL_PRESETS["gemma4"])
-        self.assertIn("Phi-3.5", MODEL_PRESETS["phi3v"])
-        self.assertIn("Phi-4", MODEL_PRESETS["phi4mm"])
+
+    def test_model_presets_contains_ministral(self) -> None:
+        self.assertIn("ministral", MODEL_PRESETS)
+        self.assertIn("Mistral-Small", MODEL_PRESETS["ministral"])
 
     def test_extract_missing_path_returns_error(self) -> None:
         import sys

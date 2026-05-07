@@ -199,15 +199,14 @@ class ExtractObjectTests(unittest.TestCase):
         """gemma-4 must be detected as gemma4, not gemma3."""
         self.assertEqual(detect_model_family("google/gemma-4-27B-it"), "gemma4")
 
-    def test_phi35_vision_detected(self) -> None:
+    def test_ministral_detected(self) -> None:
         self.assertEqual(
-            detect_model_family("microsoft/Phi-3.5-vision-instruct"), "phi"
+            detect_model_family("mistralai/Mistral-Small-3.1-24B-Instruct-2503"),
+            "ministral",
         )
 
-    def test_phi4_multimodal_detected(self) -> None:
-        self.assertEqual(
-            detect_model_family("microsoft/Phi-4-multimodal-instruct"), "phi"
-        )
+    def test_pixtral_detected_as_ministral(self) -> None:
+        self.assertEqual(detect_model_family("mistralai/Pixtral-12B-2409"), "ministral")
 
     def test_unknown_returns_generic(self) -> None:
         self.assertEqual(detect_model_family("some-org/some-unknown-model"), "generic")
@@ -251,14 +250,6 @@ class BuildMessagesTests(unittest.TestCase):
         self.assertEqual(len(image_items), 1)
         self.assertNotIn("url", image_items[0])
         self.assertNotIn("image", image_items[0])
-
-    def test_phi_content_is_string_with_image_token(self) -> None:
-        """Phi uses a plain string content with the <|image_1|> token."""
-        msgs = build_messages(model_family="phi")
-        self.assertEqual(len(msgs), 1)
-        content = msgs[0]["content"]
-        self.assertIsInstance(content, str)
-        self.assertIn("<|image_1|>", content)
 
     def test_generic_falls_back_to_placeholder(self) -> None:
         msgs = build_messages(model_family="generic")
