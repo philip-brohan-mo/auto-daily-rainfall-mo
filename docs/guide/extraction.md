@@ -60,10 +60,14 @@ the adapter weights.
 
 ## Model presets
 
-| Preset | HuggingFace ID |
-|--------|---------------|
-| `smolvlm` | `HuggingFaceTB/SmolVLM-500M-Instruct` |
-| `granite` | `ibm-granite/granite-vision-3.2-2b` |
+| Preset | HuggingFace ID | Notes |
+|--------|----------------|-------|
+| `smolvlm` | `HuggingFaceTB/SmolVLM-500M-Instruct` | Lightweight baseline |
+| `granite` | `ibm-granite/granite-vision-3.2-2b` | IBM Granite Vision 3.2, 2 B |
+| `gemma3` | `google/gemma-3-4b-it` | Google Gemma 3, 4 B |
+| `gemma4` | `google/gemma-4-E4B-it` | Google Gemma 4, 4 B edge |
+| `ministral` | `mistralai/Mistral-Small-3.1-24B-Instruct-2503` | Mistral Small 3.1, 24 B; 128 k context |
 
-Any full HuggingFace model ID (e.g. `Qwen/Qwen2-VL-2B-Instruct`) can also be
-passed directly.
+Any full HuggingFace model ID can also be passed directly.
+Gated models (Gemma, Mistral) require a HuggingFace token set via the
+`HF_TOKEN` environment variable or `~/.cache/huggingface/token`.

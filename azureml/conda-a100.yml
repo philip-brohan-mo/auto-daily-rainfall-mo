@@ -1,0 +1,24 @@
+name: weather-doc-extractor-a100
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pillow
+  - matplotlib
+  - pip:
+      # PyTorch 2.8 with CUDA 12.6 wheels — satisfies torch>=2.6 (Gemma 3/4).
+      # A100 nodes support CUDA 12.6.
+      - --extra-index-url https://download.pytorch.org/whl/cu126
+      - torch==2.8.0+cu126
+      - torchvision==0.23.0+cu126
+      - accelerate
+      - datasets
+      - huggingface_hub
+      - peft
+      # transformers >=4.49 is required for SmolVLM image processor support
+      # (SmolVLMImageProcessor was added in 4.49.0, not 4.48).
+      - transformers>=4.49.0
+      - trl
+      - scipy
+      - backoff

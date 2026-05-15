@@ -10,6 +10,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+docs = [
+    "sphinx",
+    "myst-parser",
+]
 train = [
     "accelerate",
     "datasets",

@@ -1,0 +1,15 @@
+$schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
+name: weather-doc-extractor-a100
+version: 7
+description: >
+  PyTorch 2.6 + CUDA 12.4 environment for weather document extraction.
+  Required for Gemma 3/4 models which depend on torch>=2.6.
+  Use on A100 (or any node with CUDA 12.4+ driver support).
+  All pip dependencies are installed here; the local package is installed
+  at job runtime via `pip install -e .` so the latest code is always used.
+
+# PyTorch 2.8 / CUDA 12.6 base image — the closest available curated image
+# that satisfies torch>=2.6 (required by Gemma 3/4).
+# A100 nodes support CUDA 12.6, so cu126 wheels are safe.
+image: mcr.microsoft.com/azureml/curated/acpt-pytorch-2.8-cuda12.6:8
+conda_file: conda-a100.yml

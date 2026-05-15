@@ -17,6 +17,10 @@
 #   --total-shards N        Parallel shards for extract/evaluate (default: 8)
 #   --limit N               Process only N images per shard (for smoke tests);
 #                           also defaults --total-shards to 1
+#   --env-variant v100|a100 Azure ML environment to use (default: v100).
+#                           v100 uses weather-doc-extractor  (PyTorch 2.4, CUDA 12.1)
+#                           a100 uses weather-doc-extractor-a100 (PyTorch 2.6, CUDA 12.4)
+#                           Required for Gemma 3/4 which need torch>=2.6.
 #   --help                  Show this message
 #
 # ── Examples ──────────────────────────────────────────────────────────────────
@@ -48,10 +52,12 @@ fi
 
 # Apply defaults *after* sourcing so config.env values become the baseline.
 COMMAND=""
-TOTAL_SHARDS=8
+TOTAL_SHARDS="${TOTAL_SHARDS:-1}"
 EXTRACT_LIMIT=""
-BATCH_SIZE="${BATCH_SIZE:-4}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
 WEATHER_MODEL="${WEATHER_MODEL:-smolvlm}"
+HF_TOKEN="${HF_TOKEN:-}"
+AML_ENV_VARIANT="${AML_ENV_VARIANT:-v100}"
 AML_COMPUTE="${AML_COMPUTE:-gpu-cluster}"
 AML_SUBSCRIPTION="${AML_SUBSCRIPTION:-}"
 AML_RESOURCE_GROUP="${AML_RESOURCE_GROUP:-}"
@@ -77,6 +83,7 @@ while [[ $# -gt 0 ]]; do
         --batch-size)      BATCH_SIZE="$2";            shift 2 ;;
         --model)           WEATHER_MODEL="$2";        shift 2 ;;
         --compute)         AML_COMPUTE="$2";          shift 2 ;;
+        --env-variant)     AML_ENV_VARIANT="$2";      shift 2 ;;
         --help|-h)         usage 0 ;;
         extract|evaluate|finetune|env) COMMAND="$1"; shift ;;
         *) echo "Unknown option: $1" >&2; usage 1 ;;
@@ -87,6 +94,15 @@ done
 [[ -z "$AML_SUBSCRIPTION" ]]   && { echo "Error: AML_SUBSCRIPTION not set (use --subscription or azureml/config.env)"   >&2; exit 1; }
 [[ -z "$AML_RESOURCE_GROUP" ]] && { echo "Error: AML_RESOURCE_GROUP not set (use --resource-group or azureml/config.env)" >&2; exit 1; }
 [[ -z "$AML_WORKSPACE" ]]      && { echo "Error: AML_WORKSPACE not set (use --workspace or azureml/config.env)"           >&2; exit 1; }
+
+# Select environment file and registered name based on variant.
+if [[ "$AML_ENV_VARIANT" == "a100" ]]; then
+    AML_ENV_FILE="$REPO_DIR/azureml/environment-a100.yml"
+    AML_ENV_OVERRIDE="--set environment=azureml:weather-doc-extractor-a100@latest"
+else
+    AML_ENV_FILE="$REPO_DIR/azureml/environment.yml"
+    AML_ENV_OVERRIDE=""
+fi
 
 # When --limit is set and --total-shards was not explicitly specified, default to 1 shard.
 [[ -n "$EXTRACT_LIMIT" && "$TOTAL_SHARDS" -eq 8 ]] && TOTAL_SHARDS=1
@@ -119,30 +135,22 @@ echo
 
 case "$COMMAND" in
     env)
-        # Auto-increment the version in environment.yml so re-registration
-        # always creates a new immutable version rather than failing.
-        ENV_NAME=$(grep '^name:' "$REPO_DIR/azureml/environment.yml" | awk '{print $2}')
-        # Query the highest registered version (list all, take the max numerically)
+        # Auto-increment the version so re-registration never fails on duplicate.
+        ENV_NAME=$(grep '^name:' "$AML_ENV_FILE" | awk '{print $2}')
         CURRENT_VERSION=$(az ml environment list \
             --name "$ENV_NAME" "${AML_ARGS[@]}" \
             --query "[].version" --output tsv 2>/dev/null \
-            | sort -n | tail -1)
-        CURRENT_VERSION="${CURRENT_VERSION:-0}"
+            | sort -n | tail -1) || true
+        [[ -z "$CURRENT_VERSION" ]] && CURRENT_VERSION=0
         NEXT_VERSION=$(( CURRENT_VERSION + 1 ))
-        echo "Registering environment '$ENV_NAME' version $NEXT_VERSION..."
-        # Patch the version line in environment.yml temporarily via sed
+        echo "Registering environment '$ENV_NAME' version $NEXT_VERSION (variant: $AML_ENV_VARIANT)..."
         PATCHED_YML="$REPO_DIR/azureml/.environment_tmp.yml"
-        sed "s/^version:.*/version: $NEXT_VERSION/" \
-            "$REPO_DIR/azureml/environment.yml" > "$PATCHED_YML"
-        az ml environment create \
-            --file "$PATCHED_YML" \
-            "${AML_ARGS[@]}"
+        sed "s/^version:.*/version: $NEXT_VERSION/" "$AML_ENV_FILE" > "$PATCHED_YML"
+        az ml environment create --file "$PATCHED_YML" "${AML_ARGS[@]}"
         rm -f "$PATCHED_YML"
-        # Persist the new version back into environment.yml
-        sed -i "s/^version:.*/version: $NEXT_VERSION/" \
-            "$REPO_DIR/azureml/environment.yml"
+        sed -i "s/^version:.*/version: $NEXT_VERSION/" "$AML_ENV_FILE"
         echo "Environment registered as version $NEXT_VERSION."
-        echo "environment.yml updated — commit the version bump if desired."
+        echo "$AML_ENV_FILE updated — commit the version bump if desired."
         ;;
 
     extract)
@@ -155,6 +163,7 @@ case "$COMMAND" in
                 --file "$REPO_DIR/azureml/extract_job.yml" \
                 "${AML_ARGS[@]}" \
                 --set compute="azureml:$AML_COMPUTE" \
+                ${AML_ENV_OVERRIDE:+$AML_ENV_OVERRIDE} \
                 --set inputs.images_dir.path="$IMAGES_URI" \
                 --set outputs.extractions.path="$EXTRACTIONS_URI" \
                 --set outputs.hf_cache.path="$HF_CACHE_URI" \
@@ -163,6 +172,7 @@ case "$COMMAND" in
                 --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
                 --set environment_variables.BATCH_SIZE="$BATCH_SIZE" \
                 ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
+                ${HF_TOKEN:+--set environment_variables.HF_TOKEN="$HF_TOKEN"} \
                 --set display_name="batch-extract-${MODEL_SLUG}-${i}-of-${TOTAL_SHARDS}" \
                 --query name --output tsv
         done
@@ -177,6 +187,7 @@ case "$COMMAND" in
                 --file "$REPO_DIR/azureml/evaluate_job.yml" \
                 "${AML_ARGS[@]}" \
                 --set compute="azureml:$AML_COMPUTE" \
+                ${AML_ENV_OVERRIDE:+$AML_ENV_OVERRIDE} \
                 --set inputs.images_dir.path="$IMAGES_URI" \
                 --set inputs.transcriptions_dir.path="$TRANSCRIPTIONS_URI" \
                 --set outputs.results.path="$OUTPUTS_URI/eval" \
@@ -194,9 +205,14 @@ case "$COMMAND" in
             --file "$REPO_DIR/azureml/finetune_job.yml" \
             "${AML_ARGS[@]}" \
             --set compute="azureml:$AML_COMPUTE" \
+            ${AML_ENV_OVERRIDE:+$AML_ENV_OVERRIDE} \
             --set inputs.images_dir.path="$IMAGES_URI" \
             --set inputs.transcriptions_dir.path="$TRANSCRIPTIONS_URI" \
             --set outputs.checkpoints.path="$OUTPUTS_URI/checkpoints" \
+            --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
+            ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
+            ${HF_TOKEN:+--set environment_variables.HF_TOKEN="$HF_TOKEN"} \
+            --set display_name="finetune-${MODEL_SLUG}" \
             --query name --output tsv
         echo "Finetune job submitted."
         ;;

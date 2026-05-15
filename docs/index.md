@@ -42,12 +42,16 @@ rainfall totals (mm) for a single UK station:
 
 ## Supported models
 
-| Short name | HuggingFace ID | Size |
-|------------|---------------|------|
-| `smolvlm`  | `HuggingFaceTB/SmolVLM-500M-Instruct` | 500 M params |
-| `granite`  | `ibm-granite/granite-vision-3.2-2b`   | 2 B params |
+| Short name  | HuggingFace ID | Size |
+|-------------|----------------|------|
+| `smolvlm`   | `HuggingFaceTB/SmolVLM-500M-Instruct` | 500 M |
+| `granite`   | `ibm-granite/granite-vision-3.2-2b` | 2 B |
+| `gemma3`    | `google/gemma-3-4b-it` | 4 B |
+| `gemma4`    | `google/gemma-4-E4B-it` | 4 B edge |
+| `ministral` | `mistralai/Mistral-Small-3.1-24B-Instruct-2503` | 24 B |
 
 Any HuggingFace model ID can be passed directly with `--model`.
+Gated models (Gemma, Mistral) require a HuggingFace token set via `HF_TOKEN`.
 
 ## Key features
 
@@ -61,3 +65,20 @@ Any HuggingFace model ID can be passed directly with `--model`.
 - [Installation](installation.md)
 - [Quick start](quickstart.md)
 - [CLI reference](reference/cli.md)
+
+```{toctree}
+:maxdepth: 2
+:hidden:
+
+installation
+quickstart
+guide/ingest
+guide/extraction
+guide/finetuning
+guide/evaluation
+guide/visualisation
+guide/hpc-azure
+reference/cli
+reference/configuration
+reference/architecture
+```

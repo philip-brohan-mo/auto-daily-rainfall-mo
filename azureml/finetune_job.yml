@@ -44,9 +44,7 @@ command: >-
   WEATHER_IMAGES_DIR=${{inputs.images_dir}}
   WEATHER_TRANSCRIPTIONS_DIR=${{inputs.transcriptions_dir}}
   WEATHER_TRAINING_OUTPUT_DIR=${{outputs.checkpoints}}
-  accelerate launch
-  --config_file scripts/accelerate_config.yaml
-  -m weather_doc_extractor.cli
+  python -m weather_doc_extractor.cli
   finetune
 
 # ── Environment variables ─────────────────────────────────────────────────────
@@ -61,3 +59,4 @@ environment_variables:
   WEATHER_REPORT_TO: none
 
   # HF_HOME: /mnt/blob/hf_cache
+  # EXTRACT_LIMIT: "50"  # uncomment to cap training images (smoke tests)

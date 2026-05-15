@@ -12,14 +12,14 @@
 # and configure machine_rank / num_machines accordingly.
 
 compute_environment: LOCAL_MACHINE
-distributed_type: MULTI_GPU
+distributed_type: NO         # single-GPU; change to MULTI_GPU for multi-GPU nodes
 downcast_bf16: 'no'
 gpu_ids: all
 machine_rank: 0
 main_training_function: main
 mixed_precision: bf16
 num_machines: 1
-num_processes: 4         # Set to the number of GPUs on the node
+num_processes: 1         # Set to the number of GPUs on the node (1 for A100x1)
 rdzv_backend: static
 same_network: true
 tpu_env: []

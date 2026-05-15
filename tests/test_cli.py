@@ -18,7 +18,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(lines[0], "Weather document extraction project")
         payload = json.loads("\n".join(lines[1:]))
-        self.assertEqual(payload["model"]["model_name"], "HuggingFaceTB/SmolVLM-500M-Instruct")
+        self.assertEqual(
+            payload["model"]["model_name"], "HuggingFaceTB/SmolVLM-500M-Instruct"
+        )
 
     def test_unknown_command_returns_error(self) -> None:
         stream = io.StringIO()
@@ -34,6 +36,16 @@ class CliTests(unittest.TestCase):
         self.assertIn("granite", MODEL_PRESETS)
         self.assertIn("SmolVLM", MODEL_PRESETS["smolvlm"])
         self.assertIn("granite", MODEL_PRESETS["granite"])
+
+    def test_model_presets_contains_gemma(self) -> None:
+        self.assertIn("gemma3", MODEL_PRESETS)
+        self.assertIn("gemma4", MODEL_PRESETS)
+        self.assertIn("gemma-3", MODEL_PRESETS["gemma3"])
+        self.assertIn("gemma-4", MODEL_PRESETS["gemma4"])
+
+    def test_model_presets_contains_ministral(self) -> None:
+        self.assertIn("ministral", MODEL_PRESETS)
+        self.assertIn("Mistral-Small", MODEL_PRESETS["ministral"])
 
     def test_extract_missing_path_returns_error(self) -> None:
         import sys

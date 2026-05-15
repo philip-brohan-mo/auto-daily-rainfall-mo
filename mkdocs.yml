@@ -2,44 +2,22 @@ site_name: Auto Daily Rainfall
 site_description: >-
   Using small downloadable vision-language models to extract structured daily
   rainfall data from scanned historical document images.
-site_url: https://philip-brohan.github.io/Auto-Daily-Rainfall/
-repo_url: https://github.com/philip-brohan/Auto-Daily-Rainfall
-repo_name: philip-brohan/Auto-Daily-Rainfall
+site_url: https://Philip-Brohan-MO.github.io/Auto-Daily-Rainfall/
+repo_url: https://github.com/Philip-Brohan-MO/Auto-Daily-Rainfall
+repo_name: Philip-Brohan-MO/Auto-Daily-Rainfall
 
 theme:
-  name: material
-  palette:
-    - scheme: default
-      primary: blue
-      accent: light blue
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - scheme: slate
-      primary: blue
-      accent: light blue
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
-  features:
-    - navigation.tabs
-    - navigation.sections
-    - navigation.top
-    - search.suggest
-    - search.highlight
-    - content.code.copy
+  name: mkdocs
 
 markdown_extensions:
   - admonition
-  - pymdownx.details
-  - pymdownx.superfences
-  - pymdownx.highlight:
-      anchor_linenums: true
-  - pymdownx.inlinehilite
-  - pymdownx.snippets
-  - attr_list
-  - md_in_html
   - tables
+  - toc:
+      permalink: true
+  - fenced_code
+  - codehilite:
+      guess_lang: false
+  - attr_list
 
 nav:
   - Home: index.md

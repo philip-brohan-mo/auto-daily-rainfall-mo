@@ -12,7 +12,7 @@ The pipeline has three compute-intensive stages suited to HPC:
 |-------|-------------|----------------------|
 | `batch-extract` | Embarrassingly parallel — each image is independent | GPU job array |
 | `evaluate` | Embarrassingly parallel — each image is independent | CPU or GPU job array |
-| `finetune` | Single training run, benefits from multi-GPU | GPU node (multi-GPU) |
+| `finetune` | Single training run on one GPU | Single A100 80 GB node |
 
 ---
 
@@ -93,9 +93,15 @@ Register the environment before submitting jobs for the first time:
 bash scripts/aml_submit.sh env
 ```
 
-The environment uses a PyTorch 2.2 + CUDA 12.1 base image.  Edit
-`azureml/environment.yml` and `azureml/conda.yml` to change the base image or
-add dependencies.
+Two environment variants are available; set `AML_ENV_VARIANT` in `azureml/config.env`:
+
+| Variant | PyTorch | CUDA | Use case |
+|---------|---------|------|----------|
+| `v100` | 2.4 | 12.1 | SmolVLM, Granite |
+| `a100` | 2.8 | 12.6 | Gemma 3/4, Ministral (requires `torch>=2.6`) |
+
+Edit `azureml/environment-<variant>.yml` and `azureml/conda-<variant>.yml` to
+change the base image or add dependencies.
 
 ## Environment variables
 
@@ -300,9 +306,9 @@ az ml job create \
     --set environment_variables.WEATHER_REPORT_TO=wandb
 ```
 
-Edit `azureml/finetune_job.yml` to choose your compute cluster name, data paths,
-and whether to use single-GPU or multi-GPU (the default command uses
-`accelerate launch` with `scripts/accelerate_config.yaml`).
+Edit `azureml/finetune_job.yml` to choose your compute cluster name and data
+paths.  The default command is a plain `python -m weather_doc_extractor.cli finetune`
+(single GPU — no Accelerate launcher required).
 
 ### Local / single-GPU run
 
@@ -310,29 +316,17 @@ and whether to use single-GPU or multi-GPU (the default command uses
 export WEATHER_IMAGES_DIR=Daily_rainfall_sample/images
 export WEATHER_TRANSCRIPTIONS_DIR=Daily_rainfall_sample/transcriptions
 export WEATHER_TRAINING_OUTPUT_DIR=outputs/checkpoints
+export HF_TOKEN=<your-token>   # required for Gemma/Ministral
 
 weather-extract finetune --model smolvlm --epochs 5
-```
-
-### Multi-GPU with Accelerate
-
-`scripts/accelerate_config.yaml` provides a ready-to-use configuration for
-single-node multi-GPU training (4× GPU by default — adjust `num_processes`).
-
-```bash
-accelerate launch \
-    --config_file scripts/accelerate_config.yaml \
-    -m weather_doc_extractor.cli \
-    finetune --model smolvlm --epochs 5 --report-to tensorboard
 ```
 
 ### Recommended Azure VM SKUs
 
 | SKU | GPUs | Use case |
 |-----|------|----------|
-| `Standard_NC6s_v3` | 1× V100 16 GB | Development / small runs |
-| `Standard_NC24s_v3` | 4× V100 16 GB | Multi-GPU fine-tuning |
-| `Standard_NC96ads_A100_v4` | 4× A100 80 GB | Large model fine-tuning |
+| `Standard_NC6s_v3` | 1× V100 16 GB | SmolVLM / Granite development runs |
+| `Standard_NC96ads_A100_v4` | 4× A100 80 GB | Gemma / Ministral; use single GPU per job |
 | `Standard_ND96asr_v4` | 8× A100 40 GB | Largest scale |
 
 ---

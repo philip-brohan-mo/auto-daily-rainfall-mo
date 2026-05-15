@@ -7,6 +7,9 @@ from pathlib import Path
 MODEL_PRESETS: dict[str, str] = {
     "smolvlm": "HuggingFaceTB/SmolVLM-500M-Instruct",
     "granite": "ibm-granite/granite-vision-3.2-2b",
+    "gemma3": "google/gemma-3-4b-it",
+    "gemma4": "google/gemma-4-E4B-it",
+    "ministral": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
 }
 
 
