@@ -67,14 +67,14 @@ def run(argv: list[str] | None = None) -> int:
     if command == "extract":
         if len(args) < 2:
             print(
-                "Usage: extract [--model smolvlm|granite|<hf-id>] <image_path>",
+                "Usage: extract [--model smolvlm|smolvlm2|granite|granite4|<hf-id>] <image_path>",
                 file=sys.stderr,
             )
             return 1
         remaining = _parse_model_flag(list(args[1:]), config)
         if not remaining:
             print(
-                "Usage: extract [--model smolvlm|granite|<hf-id>] <image_path>",
+                "Usage: extract [--model smolvlm|smolvlm2|granite|granite4|<hf-id>] <image_path>",
                 file=sys.stderr,
             )
             return 1

@@ -33,9 +33,15 @@ class CliTests(unittest.TestCase):
 
     def test_model_presets_contains_smolvlm_and_granite(self) -> None:
         self.assertIn("smolvlm", MODEL_PRESETS)
+        self.assertIn("smolvlm2", MODEL_PRESETS)
         self.assertIn("granite", MODEL_PRESETS)
+        self.assertIn("granite4", MODEL_PRESETS)
         self.assertIn("SmolVLM", MODEL_PRESETS["smolvlm"])
-        self.assertIn("granite", MODEL_PRESETS["granite"])
+        self.assertEqual(
+            MODEL_PRESETS["smolvlm2"], "HuggingFaceTB/SmolVLM2-2.2B-Instruct"
+        )
+        self.assertEqual(MODEL_PRESETS["granite"], "ibm-granite/granite-vision-3.2-2b")
+        self.assertEqual(MODEL_PRESETS["granite4"], "ibm-granite/granite-vision-4.1-4b")
 
     def test_model_presets_contains_gemma(self) -> None:
         self.assertIn("gemma3", MODEL_PRESETS)

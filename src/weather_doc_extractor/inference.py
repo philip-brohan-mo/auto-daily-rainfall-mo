@@ -3,7 +3,8 @@
 Public API
 ----------
 detect_model_family(model_name)
-    Return the model family tag ("smolvlm", "granite", or "generic").
+    Return the model family tag ("smolvlm", "granite", "granite4", or
+    "generic").
 
 build_messages(image_path, model_family)
     Build the chat-message list (with embedded image) for a VLM.
@@ -35,7 +36,9 @@ from weather_doc_extractor.schemas import DailyRainfallGrid
 _FAMILY_PATTERNS: list[tuple[str, list[str]]] = [
     ("gemma4", ["gemma-4"]),
     ("gemma3", ["gemma-3"]),
+    ("smolvlm2", ["smolvlm2"]),
     ("smolvlm", ["smolvlm", "idefics"]),
+    ("granite4", ["granite-vision-4.1"]),
     ("granite", ["granite"]),
     ("ministral", ["mistral-small-3", "pixtral"]),
 ]
@@ -44,7 +47,8 @@ _FAMILY_PATTERNS: list[tuple[str, list[str]]] = [
 def detect_model_family(model_name: str) -> str:
     """Return the model family for *model_name*.
 
-    Returns one of ``"smolvlm"``, ``"granite"``, or ``"generic"``.
+    Returns one of ``"smolvlm"``, ``"smolvlm2"``, ``"granite"``,
+    ``"granite4"``, or ``"generic"``.
     The family governs how messages are built and how the processor is called.
 
     If *model_name* is a local adapter directory, the base model name is read
@@ -103,11 +107,11 @@ def build_messages(
 ) -> list[dict[str, Any]]:
     """Return a chat-message list appropriate for *model_family*.
 
-    SmolVLM / Idefics3 / Gemma 4 / generic
+    SmolVLM / SmolVLM2 / Idefics3 / Gemma 4 / generic
         Uses ``{"type": "image"}`` as a placeholder; the PIL image is passed
         separately to ``processor(images=[...])``.
 
-    Granite / Gemma 3
+    Granite 3.2 / Granite 4.1 / Gemma 3
         Embeds the PIL image directly in the message content as
         ``{"type": "image", "image": pil_image}`` so that
         ``processor.apply_chat_template`` can resolve it.
@@ -119,14 +123,14 @@ def build_messages(
     Parameters
     ----------
     image_path:
-        Path to the image file.  Required for the ``"granite"`` family when
+        Path to the image file.  Required for Granite model families when
         *pil_image* is not provided; ignored for ``"smolvlm"``.
     model_family:
-        One of ``"smolvlm"``, ``"granite"``, ``"gemma3"``, ``"gemma4"``,
-        or ``"generic"``.
+        One of ``"smolvlm"``, ``"smolvlm2"``, ``"granite"``, ``"granite4"``,
+        ``"gemma3"``, ``"gemma4"``, or ``"generic"``.
     pil_image:
         Pre-loaded ``PIL.Image.Image``.  Required for the ``"gemma3"`` family;
-        used instead of the URL for ``"granite"`` if provided.
+        used instead of the URL for Granite families if provided.
     """
     if model_family == "gemma3":
         image_item: dict[str, Any] = {"type": "image", "image": pil_image}
@@ -139,7 +143,7 @@ def build_messages(
                 ],
             },
         ]
-    if model_family == "granite":
+    if model_family.startswith("granite"):
         if pil_image is not None:
             image_item = {"type": "image", "image": pil_image}
         else:
@@ -656,7 +660,7 @@ def extract_grid_batch_with_model(
     if do_sample:
         generate_kwargs["temperature"] = config.temperature
 
-    if family in ("granite", "gemma3", "gemma4"):
+    if family.startswith("granite") or family in ("gemma3", "gemma4"):
         # These families require per-image processing: Granite and Gemma 3 embed
         # the image in the message, Gemma 4 has a processor API that is
         # not straightforwardly batched.
@@ -768,7 +772,7 @@ def extract_grid_with_model(
     if do_sample:
         generate_kwargs["temperature"] = config.temperature
 
-    if family in ("granite", "gemma3"):
+    if family.startswith("granite") or family == "gemma3":
         # These families embed the image directly in the message; the processor
         # tokenises everything in one apply_chat_template call.
         # Gemma 3: pass do_pan_and_scan=True so the processor tiles wide/tall

@@ -69,7 +69,7 @@ def build_training_example(
     pil_image = PILImage.open(record.image_path).convert("RGB")
     answer = _ground_truth_json(record)
 
-    if family in ("granite", "gemma3"):
+    if family.startswith("granite") or family == "gemma3":
         # These families embed the PIL image directly in the message so the
         # processor can resolve it during apply_chat_template.
         image_item: dict[str, Any] = {"type": "image", "image": pil_image}
@@ -284,8 +284,9 @@ def _make_collate_fn(processor: Any, family: str):
         batch["labels"] = labels
         return batch
 
+    if family.startswith("granite"):
+        return _collate_granite
     _dispatch = {
-        "granite": _collate_granite,
         "gemma3": _collate_gemma3,
         "gemma4": _collate_gemma4,
     }

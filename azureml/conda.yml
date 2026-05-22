@@ -17,6 +17,7 @@ dependencies:
       - accelerate
       - datasets
       - huggingface_hub
+      - num2words
       - peft
       # transformers >=4.49 is required for SmolVLM image processor support
       # (SmolVLMImageProcessor was added in 4.49.0, not 4.48).

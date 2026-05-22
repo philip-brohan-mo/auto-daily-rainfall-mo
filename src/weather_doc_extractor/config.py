@@ -6,7 +6,9 @@ from pathlib import Path
 # Values are the full HuggingFace model IDs.
 MODEL_PRESETS: dict[str, str] = {
     "smolvlm": "HuggingFaceTB/SmolVLM-500M-Instruct",
+    "smolvlm2": "HuggingFaceTB/SmolVLM2-2.2B-Instruct",
     "granite": "ibm-granite/granite-vision-3.2-2b",
+    "granite4": "ibm-granite/granite-vision-4.1-4b",
     "gemma3": "google/gemma-3-4b-it",
     "gemma4": "google/gemma-4-E4B-it",
     "ministral": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
@@ -73,7 +75,8 @@ class IngestConfig:
 @dataclass
 class ModelConfig:
     # Override via WEATHER_MODEL / WEATHER_MAX_NEW_TOKENS / WEATHER_DEVICE
-    # Short preset names ("smolvlm", "granite") are resolved to full HF IDs.
+    # Short preset names ("smolvlm", "granite", "granite4") are resolved
+    # to full HF IDs.
     model_name: str = field(
         default_factory=lambda: MODEL_PRESETS.get(
             (v := _env_str("WEATHER_MODEL", "HuggingFaceTB/SmolVLM-500M-Instruct")), v

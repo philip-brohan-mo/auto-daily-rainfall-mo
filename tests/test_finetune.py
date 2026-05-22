@@ -15,14 +15,16 @@ from weather_doc_extractor.finetune import (
 )
 from weather_doc_extractor.schemas import DailyRainfallGrid, DailyRainfallRecord
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def _make_grid() -> DailyRainfallGrid:
-    days = {f"Day {i}": [float(i) if j < 6 else None for j in range(12)] for i in range(1, 32)}
+    days = {
+        f"Day {i}": [float(i) if j < 6 else None for j in range(12)]
+        for i in range(1, 32)
+    }
     totals = [1.0, 2.0, None, 0.5, 1.2, None, 0.3, None, 0.9, 1.1, None, 2.3]
     return DailyRainfallGrid(days=days, totals=totals)
 
@@ -131,9 +133,23 @@ class TestBuildTrainingExampleSmolvlm:
         record = _make_record(tmp_path)
         smol = build_training_example(record, "smolvlm")
         generic = build_training_example(record, "generic")
-        smol_img_item = [c for c in smol["messages"][0]["content"] if c.get("type") == "image"][0]
-        gen_img_item = [c for c in generic["messages"][0]["content"] if c.get("type") == "image"][0]
+        smol_img_item = [
+            c for c in smol["messages"][0]["content"] if c.get("type") == "image"
+        ][0]
+        gen_img_item = [
+            c for c in generic["messages"][0]["content"] if c.get("type") == "image"
+        ][0]
         assert smol_img_item == gen_img_item
+
+    def test_smolvlm2_uses_placeholder_like_smolvlm(self, tmp_path):
+        record = _make_record(tmp_path)
+        ex = build_training_example(record, "smolvlm2")
+        user_content = ex["messages"][0]["content"]
+        image_items = [c for c in user_content if c.get("type") == "image"]
+        assert len(image_items) == 1
+        # SmolVLM2 should use placeholder (no url, no image field)
+        assert "url" not in image_items[0]
+        assert "image" not in image_items[0]
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +183,16 @@ class TestBuildTrainingExampleGranite:
         assistant_text = ex["messages"][1]["content"][0]["text"]
         expected = json.loads(_ground_truth_json(record))
         assert json.loads(assistant_text) == expected
+
+    def test_granite4_uses_same_embedded_image_pattern(self, tmp_path):
+        from PIL import Image as PILImage
+
+        record = _make_record(tmp_path)
+        ex = build_training_example(record, "granite4")
+        user_content = ex["messages"][0]["content"]
+        image_item = next(c for c in user_content if c.get("type") == "image")
+        assert isinstance(image_item.get("image"), PILImage.Image)
+        assert "url" not in image_item
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +228,16 @@ class TestBuildTrainingExamples:
         img_item = next(c for c in user_content if c.get("type") == "image")
         assert isinstance(img_item.get("image"), PILImage.Image)
 
+    def test_granite4_family_produces_embedded_pil(self, tmp_path):
+        from PIL import Image as PILImage
+
+        record = _make_record(tmp_path)
+        examples = build_training_examples([record], "granite4")
+        assert len(examples) == 1
+        user_content = examples[0]["messages"][0]["content"]
+        img_item = next(c for c in user_content if c.get("type") == "image")
+        assert isinstance(img_item.get("image"), PILImage.Image)
+
 
 # ---------------------------------------------------------------------------
 # CLI integration — finetune command argument parsing
@@ -219,7 +255,15 @@ class TestFinetuneCliArgParsing:
         with patch("weather_doc_extractor.cli.run_finetune") as mock_ft:
             mock_ft.return_value = Path("/tmp/adapter")
             result = run(
-                ["finetune", "--model", "smolvlm", "--epochs", "1", "--eval-split", "0.2"]
+                [
+                    "finetune",
+                    "--model",
+                    "smolvlm",
+                    "--epochs",
+                    "1",
+                    "--eval-split",
+                    "0.2",
+                ]
             )
         assert result == 0
         mock_ft.assert_called_once()
