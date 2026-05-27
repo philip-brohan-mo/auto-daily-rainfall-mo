@@ -9,3 +9,6 @@ docs/_build/
 azureml/config.env
 
 azureml/.environment_tmp.yml
+
+# Ignore artificially generated fake data files
+fake_daily_rainfall/

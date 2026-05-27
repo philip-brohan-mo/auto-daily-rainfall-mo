@@ -17,10 +17,19 @@
 #   --total-shards N        Parallel shards for extract/evaluate (default: 8)
 #   --limit N               Process only N images per shard (for smoke tests);
 #                           also defaults --total-shards to 1
+#   --model MODEL           Model preset (smolvlm, smolvlm2, granite, granite4) or HF ID
 #   --env-variant v100|a100 Azure ML environment to use (default: v100).
 #                           v100 uses weather-doc-extractor  (PyTorch 2.4, CUDA 12.1)
-#                           a100 uses weather-doc-extractor-a100 (PyTorch 2.6, CUDA 12.4)
-#                           Required for Gemma 3/4 which need torch>=2.6.
+#                           a100 uses weather-doc-extractor-a100 (PyTorch 2.8, CUDA 12.6)
+#                           Auto-selected for granite4, gemma3, gemma4, ministral which need torch>=2.6.
+#   --dataset real|fake     Quick dataset selector: real → Daily_rainfall_sample;
+#                           fake → fake_daily_rainfall
+#   --images-path PATH      Override AML_IMAGES_PATH
+#   --transcriptions-path PATH  Override AML_TRANSCRIPTIONS_PATH
+#   --checkpoint PATH       Use a saved fine-tuned checkpoint for extraction
+#                           (overrides --model); path relative to AML_DATASTORE_BASE
+#   --clear-modules         Delete stale HF transformers_modules cache before running.
+#                           Use after upgrading transformers to fix custom-model errors.
 #   --help                  Show this message
 #
 # ── Examples ──────────────────────────────────────────────────────────────────
@@ -29,14 +38,20 @@
 #   # edit azureml/config.env
 #   bash scripts/aml_submit.sh env
 #
-#   # Submit 8 extract shards (uses azureml/config.env):
+#   # Extract from real data (default, 8 shards):
 #   bash scripts/aml_submit.sh --total-shards 8 extract
 #
-#   # Quick smoke test — 1 shard, 5 images:
-#   bash scripts/aml_submit.sh --limit 5 extract
+#   # Extract from fake data (quick test):
+#   bash scripts/aml_submit.sh --dataset fake --limit 10 extract
 #
-#   # Override workspace on the command line:
-#   bash scripts/aml_submit.sh --workspace other-ws evaluate
+#   # Extract from fake data for full fine-tuning:
+#   bash scripts/aml_submit.sh --dataset fake --model granite4 finetune
+#
+#   # Extract using a fine-tuned checkpoint:
+#   bash scripts/aml_submit.sh --checkpoint outputs/checkpoints/granite-fake-20260526-143000 --limit 50 extract
+#
+#   # Quick smoke test — real data, 1 shard, 5 images:
+#   bash scripts/aml_submit.sh --limit 5 extract
 
 set -euo pipefail
 
@@ -56,6 +71,8 @@ TOTAL_SHARDS="${TOTAL_SHARDS:-1}"
 EXTRACT_LIMIT=""
 BATCH_SIZE="${BATCH_SIZE:-1}"
 WEATHER_MODEL="${WEATHER_MODEL:-smolvlm}"
+WEATHER_CHECKPOINT=""
+CLEAR_HF_MODULES="0"
 HF_TOKEN="${HF_TOKEN:-}"
 AML_ENV_VARIANT="${AML_ENV_VARIANT:-v100}"
 AML_COMPUTE="${AML_COMPUTE:-gpu-cluster}"
@@ -75,16 +92,27 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --subscription)    AML_SUBSCRIPTION="$2";    shift 2 ;;
-        --resource-group)  AML_RESOURCE_GROUP="$2";  shift 2 ;;
-        --workspace)       AML_WORKSPACE="$2";        shift 2 ;;
-        --total-shards)    TOTAL_SHARDS="$2";         shift 2 ;;
-        --limit)           EXTRACT_LIMIT="$2";        shift 2 ;;
-        --batch-size)      BATCH_SIZE="$2";            shift 2 ;;
-        --model)           WEATHER_MODEL="$2";        shift 2 ;;
-        --compute)         AML_COMPUTE="$2";          shift 2 ;;
-        --env-variant)     AML_ENV_VARIANT="$2";      shift 2 ;;
-        --help|-h)         usage 0 ;;
+        --subscription)      AML_SUBSCRIPTION="$2";    shift 2 ;;
+        --resource-group)    AML_RESOURCE_GROUP="$2";  shift 2 ;;
+        --workspace)         AML_WORKSPACE="$2";        shift 2 ;;
+        --total-shards)      TOTAL_SHARDS="$2";         shift 2 ;;
+        --limit)             EXTRACT_LIMIT="$2";        shift 2 ;;
+        --batch-size)        BATCH_SIZE="$2";            shift 2 ;;
+        --model)             WEATHER_MODEL="$2";        shift 2 ;;
+        --compute)           AML_COMPUTE="$2";          shift 2 ;;
+        --env-variant)       AML_ENV_VARIANT="$2";      shift 2 ;;
+        --dataset)
+            case "$2" in
+                real) AML_IMAGES_PATH="Daily_rainfall_sample/images"; AML_TRANSCRIPTIONS_PATH="Daily_rainfall_sample/transcriptions" ;;
+                fake) AML_IMAGES_PATH="fake_daily_rainfall/images"; AML_TRANSCRIPTIONS_PATH="fake_daily_rainfall/transcriptions" ;;
+                *) echo "Unknown dataset: $2 (use 'real' or 'fake')" >&2; exit 1 ;;
+            esac
+            shift 2 ;;
+        --images-path)       AML_IMAGES_PATH="$2";       shift 2 ;;
+        --transcriptions-path) AML_TRANSCRIPTIONS_PATH="$2"; shift 2 ;;
+        --checkpoint)        WEATHER_CHECKPOINT="$2";    shift 2 ;;
+        --clear-modules)     CLEAR_HF_MODULES="1";         shift ;;
+        --help|-h)           usage 0 ;;
         extract|evaluate|finetune|env) COMMAND="$1"; shift ;;
         *) echo "Unknown option: $1" >&2; usage 1 ;;
     esac
@@ -96,6 +124,16 @@ done
 [[ -z "$AML_WORKSPACE" ]]      && { echo "Error: AML_WORKSPACE not set (use --workspace or azureml/config.env)"           >&2; exit 1; }
 
 # Select environment file and registered name based on variant.
+# Auto-upgrade to a100 if the model requires torch >= 2.6 (v100 has 2.4)
+case "$WEATHER_MODEL" in
+    granite4|granite-vision-4.1*|gemma3|gemma4|ministral|mistral*)
+        if [[ "$AML_ENV_VARIANT" == "v100" ]]; then
+            echo "⚠️  Model $WEATHER_MODEL requires torch >= 2.6. Auto-switching to a100 environment."
+            AML_ENV_VARIANT="a100"
+        fi
+        ;;
+esac
+
 if [[ "$AML_ENV_VARIANT" == "a100" ]]; then
     AML_ENV_FILE="$REPO_DIR/azureml/environment-a100.yml"
     AML_ENV_OVERRIDE="--set environment=azureml:weather-doc-extractor-a100@latest"
@@ -109,7 +147,16 @@ fi
 
 # Output subdirectory: extractions/<model-slug>/<YYYYMMDD-HHMMSS>
 # This ensures runs from different models and repeated runs never overwrite each other.
-MODEL_SLUG="${WEATHER_MODEL##*/}"
+# If checkpoint is specified, use it for extraction; otherwise use the model preset.
+if [[ -n "$WEATHER_CHECKPOINT" ]]; then
+    # Checkpoint overrides model; extract the checkpoint name for the output directory
+    CHECKPOINT_NAME="${WEATHER_CHECKPOINT##*/}"
+    CHECKPOINT_URI="$AML_DATASTORE_BASE/$WEATHER_CHECKPOINT"
+    MODEL_SLUG="$CHECKPOINT_NAME"
+else
+    CHECKPOINT_URI=""
+    MODEL_SLUG="${WEATHER_MODEL##*/}"
+fi
 RUN_TIMESTAMP="$(date -u +%Y%m%d-%H%M%S)"
 
 # Resolved datastore URIs
@@ -155,6 +202,7 @@ case "$COMMAND" in
 
     extract)
         echo "Submitting $TOTAL_SHARDS extract shard(s)${EXTRACT_LIMIT:+ (limit: $EXTRACT_LIMIT images each)}..."
+        [[ -n "$WEATHER_CHECKPOINT" ]] && echo "  Checkpoint: $CHECKPOINT_URI"
         echo "  Output:   $EXTRACTIONS_URI"
         echo "  HF cache: $HF_CACHE_URI"
         for i in $(seq 1 "$TOTAL_SHARDS"); do
@@ -171,7 +219,9 @@ case "$COMMAND" in
                 --set environment_variables.TOTAL_SHARDS="$TOTAL_SHARDS" \
                 --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
                 --set environment_variables.BATCH_SIZE="$BATCH_SIZE" \
+                ${CHECKPOINT_URI:+--set environment_variables.WEATHER_CHECKPOINT="$CHECKPOINT_URI"} \
                 ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
+                --set environment_variables.CLEAR_HF_MODULES="$CLEAR_HF_MODULES" \
                 ${HF_TOKEN:+--set environment_variables.HF_TOKEN="$HF_TOKEN"} \
                 --set display_name="batch-extract-${MODEL_SLUG}-${i}-of-${TOTAL_SHARDS}" \
                 --query name --output tsv
@@ -201,7 +251,7 @@ case "$COMMAND" in
 
     finetune)
         echo "Submitting finetune job..."
-        az ml job create \
+        JOB_ID=$(az ml job create \
             --file "$REPO_DIR/azureml/finetune_job.yml" \
             "${AML_ARGS[@]}" \
             --set compute="azureml:$AML_COMPUTE" \
@@ -213,7 +263,17 @@ case "$COMMAND" in
             ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
             ${HF_TOKEN:+--set environment_variables.HF_TOKEN="$HF_TOKEN"} \
             --set display_name="finetune-${MODEL_SLUG}" \
-            --query name --output tsv
-        echo "Finetune job submitted."
+            --query name --output tsv)
+        echo "Finetune job submitted: $JOB_ID"
+        echo
+        echo "After the job completes, register the checkpoint:"
+        echo "  python scripts/create_model_registry_entry.py \\"
+        echo "    --checkpoint-path outputs/checkpoints/CHECKPOINT_NAME \\"
+        echo "    --base-model $WEATHER_MODEL \\"
+        echo "    --dataset $AML_IMAGES_PATH \\"
+        echo "    --registry-file outputs/model_registry.json"
+        echo
+        echo "Then extract using the checkpoint:"
+        echo "  bash scripts/aml_submit.sh --checkpoint outputs/checkpoints/CHECKPOINT_NAME extract"
         ;;
 esac

@@ -171,6 +171,14 @@ class ExtractObjectTests(unittest.TestCase):
     def test_smolvlm_case_insensitive(self) -> None:
         self.assertEqual(detect_model_family("HuggingFaceTB/smolvlm-256m"), "smolvlm")
 
+    def test_smolvlm2_detected(self) -> None:
+        self.assertEqual(
+            detect_model_family("HuggingFaceTB/SmolVLM2-2.2B-Instruct"), "smolvlm2"
+        )
+
+    def test_smolvlm2_case_insensitive(self) -> None:
+        self.assertEqual(detect_model_family("HuggingFaceTB/smolvlm2-256m"), "smolvlm2")
+
     def test_idefics_detected_as_smolvlm(self) -> None:
         self.assertEqual(
             detect_model_family("HuggingFaceM4/Idefics3-8B-Llama3"), "smolvlm"
@@ -184,6 +192,16 @@ class ExtractObjectTests(unittest.TestCase):
     def test_granite_case_insensitive(self) -> None:
         self.assertEqual(
             detect_model_family("ibm-granite/Granite-Vision-3.2-2B"), "granite"
+        )
+
+    def test_granite4_detected(self) -> None:
+        self.assertEqual(
+            detect_model_family("ibm-granite/granite-vision-4.1-4b"), "granite4"
+        )
+
+    def test_granite4_case_insensitive(self) -> None:
+        self.assertEqual(
+            detect_model_family("ibm-granite/Granite-Vision-4.1-4B"), "granite4"
         )
 
     def test_gemma3_detected(self) -> None:
@@ -230,6 +248,15 @@ class BuildMessagesTests(unittest.TestCase):
 
         p = Path("/data/images/DRain_1871-1880_Cornwall-59.jpg")
         msgs = build_messages(image_path=p, model_family="granite")
+        image_items = [i for i in msgs[0]["content"] if i["type"] == "image"]
+        self.assertEqual(len(image_items), 1)
+        self.assertEqual(image_items[0]["url"], str(p))
+
+    def test_granite4_embeds_image_url(self) -> None:
+        from pathlib import Path
+
+        p = Path("/data/images/DRain_1871-1880_Cornwall-59.jpg")
+        msgs = build_messages(image_path=p, model_family="granite4")
         image_items = [i for i in msgs[0]["content"] if i["type"] == "image"]
         self.assertEqual(len(image_items), 1)
         self.assertEqual(image_items[0]["url"], str(p))

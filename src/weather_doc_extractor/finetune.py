@@ -69,7 +69,7 @@ def build_training_example(
     pil_image = PILImage.open(record.image_path).convert("RGB")
     answer = _ground_truth_json(record)
 
-    if family in ("granite", "gemma3"):
+    if family.startswith("granite") or family == "gemma3":
         # These families embed the PIL image directly in the message so the
         # processor can resolve it during apply_chat_template.
         image_item: dict[str, Any] = {"type": "image", "image": pil_image}
@@ -284,8 +284,9 @@ def _make_collate_fn(processor: Any, family: str):
         batch["labels"] = labels
         return batch
 
+    if family.startswith("granite"):
+        return _collate_granite
     _dispatch = {
-        "granite": _collate_granite,
         "gemma3": _collate_gemma3,
         "gemma4": _collate_gemma4,
     }
@@ -353,9 +354,35 @@ def run_finetune(
     train_examples = build_training_examples(train_records, family)
     eval_examples = build_training_examples(eval_records, family)
 
+    # Resolve model path via HF cache (same logic as inference, avoids
+    # re-downloading and bypasses the trust_remote_code Hub check)
+    from weather_doc_extractor.inference import _local_hf_home, _resolve_model_path
+    import os
+    from pathlib import Path as _Path
+
+    original_hf_home = os.environ.get("HF_HOME")
+    local_cache = _local_hf_home()
+    if local_cache is not None:
+        os.environ["HF_HOME"] = str(local_cache)
+        try:
+            import huggingface_hub.constants as _hfc
+
+            _hfc.HF_HOME = str(local_cache)
+            _hfc.HUGGINGFACE_HUB_CACHE = str(local_cache / "hub")
+            _hfc.HF_HUB_CACHE = str(local_cache / "hub")
+        except Exception:
+            pass
+        if original_hf_home and _Path(original_hf_home) != local_cache:
+            os.environ["_ORIGINAL_HF_HOME"] = original_hf_home
+
+    hf_cache_dir: str | None = str(local_cache / "hub") if local_cache else None
+    resolved_name = _resolve_model_path(model_config.model_name)
+
     # Load processor and model
     proc_kwargs: dict[str, Any] = {"trust_remote_code": True}
-    processor = AutoProcessor.from_pretrained(model_config.model_name, **proc_kwargs)
+    if hf_cache_dir:
+        proc_kwargs["cache_dir"] = hf_cache_dir
+    processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     model_kwargs: dict[str, Any] = {
@@ -363,7 +390,9 @@ def run_finetune(
         "device_map": model_config.device,
         "trust_remote_code": True,
     }
-    model = model_cls.from_pretrained(model_config.model_name, **model_kwargs)
+    if hf_cache_dir:
+        model_kwargs["cache_dir"] = hf_cache_dir
+    model = model_cls.from_pretrained(resolved_name, **model_kwargs)
 
     # LoRA configuration
     target_modules = train_config.lora_target_modules or "all-linear"
@@ -409,6 +438,7 @@ def run_finetune(
         train_dataset=train_examples,
         eval_dataset=eval_examples,
         data_collator=collate_fn,
+        processing_class=processor,
         peft_config=lora_cfg,
     )
 

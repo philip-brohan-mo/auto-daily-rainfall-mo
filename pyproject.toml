@@ -17,6 +17,7 @@ docs = [
 train = [
     "accelerate",
     "datasets",
+    "num2words",
     "peft",
     "torch",
     "transformers",
