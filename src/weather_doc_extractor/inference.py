@@ -333,11 +333,11 @@ def _log_device_info() -> None:
 def _local_hf_home() -> Path | None:
     """Return a writable local HF_HOME path, creating it if necessary.
 
-    When HF_HOME points to a blob-storage mount (slow random reads), we do NOT
-    copy the whole cache locally — that would duplicate every previously-cached
-    model and quickly exhaust local disk.  Instead we return a fresh local
-    directory and rely on ``_resolve_model_path`` to copy only the one model
-    snapshot that is actually needed for this job.
+    On Azure ML (when HF_HOME is a mounted datastore), use it directly since
+    it persists across jobs and is shared with other jobs.  Do not use /tmp.
+
+    On local systems (HF_HOME is a regular directory), also use HF_HOME directly
+    for simplicity.  The /tmp optimization is only applied when explicitly needed.
 
     Returns None if HF_HOME is not set (HuggingFace uses its default cache).
     """
@@ -347,13 +347,24 @@ def _local_hf_home() -> Path | None:
     if not hf_home:
         return None
 
-    local = Path("/tmp/hf_cache")
-    if not local.exists():
-        local.mkdir(parents=True, exist_ok=True)
-        print(f"[cache] Created local HF cache dir at {local}", flush=True)
-    else:
-        print(f"[cache] Reusing local HF cache dir at {local}", flush=True)
-    return local
+    hf_path = Path(hf_home)
+
+    # If HF_HOME is already a mounted datastore path (e.g., Azure ML mount),
+    # use it directly — it persists across jobs.  Don't create /tmp cache.
+    if (
+        hf_home.startswith("/mnt/")
+        or hf_home.startswith("${{")
+        or "azureml" in hf_home.lower()
+    ):
+        print(f"[cache] Using Azure datastore cache directly: {hf_home}", flush=True)
+        hf_path.mkdir(parents=True, exist_ok=True)
+        return hf_path
+
+    # For local or non-mount paths, use HF_HOME directly as well
+    # (avoids complexity of /tmp cache coordination)
+    hf_path.mkdir(parents=True, exist_ok=True)
+    print(f"[cache] Using HF_HOME directly: {hf_home}", flush=True)
+    return hf_path
 
 
 def _resolve_model_path(model_name: str) -> str:

@@ -1,6 +1,6 @@
 $schema: https://azuremlschemas.azureedge.net/latest/environment.schema.json
 name: weather-doc-extractor-a100
-version: 7
+version: 12
 description: >
   PyTorch 2.6 + CUDA 12.4 environment for weather document extraction.
   Required for Gemma 3/4 models which depend on torch>=2.6.
