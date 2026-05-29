@@ -22,8 +22,12 @@
 #                           v100 uses weather-doc-extractor  (PyTorch 2.4, CUDA 12.1)
 #                           a100 uses weather-doc-extractor-a100 (PyTorch 2.8, CUDA 12.6)
 #                           Auto-selected for granite4, gemma3, gemma4, ministral which need torch>=2.6.
-#   --dataset real|fake     Quick dataset selector: real → Daily_rainfall_sample;
-#                           fake → fake_daily_rainfall
+#   --dataset real|fake|test_real|test_fake
+#                           Quick dataset selector:
+#                             real      → Daily_rainfall_sample
+#                             fake      → fake_daily_rainfall
+#                             test_real → test_data/real  (committed test split)
+#                             test_fake → test_data/fake  (committed test split)
 #   --images-path PATH      Override AML_IMAGES_PATH
 #   --transcriptions-path PATH  Override AML_TRANSCRIPTIONS_PATH
 #   --checkpoint PATH       Use a saved fine-tuned checkpoint for extraction
@@ -103,9 +107,11 @@ while [[ $# -gt 0 ]]; do
         --env-variant)       AML_ENV_VARIANT="$2";      shift 2 ;;
         --dataset)
             case "$2" in
-                real) AML_IMAGES_PATH="Daily_rainfall_sample/images"; AML_TRANSCRIPTIONS_PATH="Daily_rainfall_sample/transcriptions" ;;
-                fake) AML_IMAGES_PATH="fake_daily_rainfall/images"; AML_TRANSCRIPTIONS_PATH="fake_daily_rainfall/transcriptions" ;;
-                *) echo "Unknown dataset: $2 (use 'real' or 'fake')" >&2; exit 1 ;;
+                real)      AML_IMAGES_PATH="Daily_rainfall_sample/images"; AML_TRANSCRIPTIONS_PATH="Daily_rainfall_sample/transcriptions" ;;
+                fake)      AML_IMAGES_PATH="fake_daily_rainfall/images"; AML_TRANSCRIPTIONS_PATH="fake_daily_rainfall/transcriptions" ;;
+                test_real) AML_IMAGES_PATH="test_data/real/images"; AML_TRANSCRIPTIONS_PATH="test_data/real/transcriptions" ;;
+                test_fake) AML_IMAGES_PATH="test_data/fake/images"; AML_TRANSCRIPTIONS_PATH="test_data/fake/transcriptions" ;;
+                *) echo "Unknown dataset: $2 (use 'real', 'fake', 'test_real', or 'test_fake')" >&2; exit 1 ;;
             esac
             shift 2 ;;
         --images-path)       AML_IMAGES_PATH="$2";       shift 2 ;;
