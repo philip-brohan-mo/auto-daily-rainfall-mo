@@ -22,12 +22,19 @@
 #                           v100 uses weather-doc-extractor  (PyTorch 2.4, CUDA 12.1)
 #                           a100 uses weather-doc-extractor-a100 (PyTorch 2.8, CUDA 12.6)
 #                           Auto-selected for granite4, gemma3, gemma4, ministral which need torch>=2.6.
-#   --dataset real|fake     Quick dataset selector: real → Daily_rainfall_sample;
-#                           fake → fake_daily_rainfall
+#   --dataset real|fake|test_real|test_fake
+#                           Quick dataset selector:
+#                             real      → Daily_rainfall_sample
+#                             fake      → fake_daily_rainfall
+#                             test_real → test_data/real  (committed test split)
+#                             test_fake → test_data/fake  (committed test split)
 #   --images-path PATH      Override AML_IMAGES_PATH
 #   --transcriptions-path PATH  Override AML_TRANSCRIPTIONS_PATH
 #   --checkpoint PATH       Use a saved fine-tuned checkpoint for extraction
 #                           (overrides --model); path relative to AML_DATASTORE_BASE
+#   --extraction-registry FILE
+#                           Local JSON registry file for submitted extraction runs
+#                           (default: outputs/extraction_registry.json)
 #   --clear-modules         Delete stale HF transformers_modules cache before running.
 #                           Use after upgrading transformers to fix custom-model errors.
 #   --help                  Show this message
@@ -72,6 +79,7 @@ EXTRACT_LIMIT=""
 BATCH_SIZE="${BATCH_SIZE:-1}"
 WEATHER_MODEL="${WEATHER_MODEL:-smolvlm}"
 WEATHER_CHECKPOINT=""
+EXTRACTION_REGISTRY_FILE="${EXTRACTION_REGISTRY_FILE:-outputs/extraction_registry.json}"
 CLEAR_HF_MODULES="0"
 HF_TOKEN="${HF_TOKEN:-}"
 AML_ENV_VARIANT="${AML_ENV_VARIANT:-v100}"
@@ -103,14 +111,17 @@ while [[ $# -gt 0 ]]; do
         --env-variant)       AML_ENV_VARIANT="$2";      shift 2 ;;
         --dataset)
             case "$2" in
-                real) AML_IMAGES_PATH="Daily_rainfall_sample/images"; AML_TRANSCRIPTIONS_PATH="Daily_rainfall_sample/transcriptions" ;;
-                fake) AML_IMAGES_PATH="fake_daily_rainfall/images"; AML_TRANSCRIPTIONS_PATH="fake_daily_rainfall/transcriptions" ;;
-                *) echo "Unknown dataset: $2 (use 'real' or 'fake')" >&2; exit 1 ;;
+                real)      AML_IMAGES_PATH="Daily_rainfall_sample/images"; AML_TRANSCRIPTIONS_PATH="Daily_rainfall_sample/transcriptions" ;;
+                fake)      AML_IMAGES_PATH="fake_daily_rainfall/images"; AML_TRANSCRIPTIONS_PATH="fake_daily_rainfall/transcriptions" ;;
+                test_real) AML_IMAGES_PATH="test_data/real/images"; AML_TRANSCRIPTIONS_PATH="test_data/real/transcriptions" ;;
+                test_fake) AML_IMAGES_PATH="test_data/fake/images"; AML_TRANSCRIPTIONS_PATH="test_data/fake/transcriptions" ;;
+                *) echo "Unknown dataset: $2 (use 'real', 'fake', 'test_real', or 'test_fake')" >&2; exit 1 ;;
             esac
             shift 2 ;;
         --images-path)       AML_IMAGES_PATH="$2";       shift 2 ;;
         --transcriptions-path) AML_TRANSCRIPTIONS_PATH="$2"; shift 2 ;;
         --checkpoint)        WEATHER_CHECKPOINT="$2";    shift 2 ;;
+        --extraction-registry) EXTRACTION_REGISTRY_FILE="$2"; shift 2 ;;
         --clear-modules)     CLEAR_HF_MODULES="1";         shift ;;
         --help|-h)           usage 0 ;;
         extract|evaluate|finetune|env) COMMAND="$1"; shift ;;
@@ -158,12 +169,13 @@ else
     MODEL_SLUG="${WEATHER_MODEL##*/}"
 fi
 RUN_TIMESTAMP="$(date -u +%Y%m%d-%H%M%S)"
+EXTRACTIONS_REL_PATH="$AML_OUTPUTS_PATH/extractions/$MODEL_SLUG/$RUN_TIMESTAMP"
 
 # Resolved datastore URIs
 IMAGES_URI="$AML_DATASTORE_BASE/$AML_IMAGES_PATH"
 TRANSCRIPTIONS_URI="$AML_DATASTORE_BASE/$AML_TRANSCRIPTIONS_PATH"
 OUTPUTS_URI="$AML_DATASTORE_BASE/$AML_OUTPUTS_PATH"
-EXTRACTIONS_URI="$OUTPUTS_URI/extractions/$MODEL_SLUG/$RUN_TIMESTAMP"
+EXTRACTIONS_URI="$AML_DATASTORE_BASE/$EXTRACTIONS_REL_PATH"
 HF_CACHE_URI="$AML_DATASTORE_BASE/$AML_HF_CACHE_PATH"
 
 AML_ARGS=(
@@ -205,9 +217,10 @@ case "$COMMAND" in
         [[ -n "$WEATHER_CHECKPOINT" ]] && echo "  Checkpoint: $CHECKPOINT_URI"
         echo "  Output:   $EXTRACTIONS_URI"
         echo "  HF cache: $HF_CACHE_URI"
+        JOB_IDS=()
         for i in $(seq 1 "$TOTAL_SHARDS"); do
             echo "  Shard $i / $TOTAL_SHARDS ..."
-            az ml job create \
+            JOB_ID=$(az ml job create \
                 --file "$REPO_DIR/azureml/extract_job.yml" \
                 "${AML_ARGS[@]}" \
                 --set compute="azureml:$AML_COMPUTE" \
@@ -224,9 +237,31 @@ case "$COMMAND" in
                 --set environment_variables.CLEAR_HF_MODULES="$CLEAR_HF_MODULES" \
                 ${HF_TOKEN:+--set environment_variables.HF_TOKEN="$HF_TOKEN"} \
                 --set display_name="batch-extract-${MODEL_SLUG}-${i}-of-${TOTAL_SHARDS}" \
-                --query name --output tsv
+                --query name --output tsv)
+            echo "$JOB_ID"
+            JOB_IDS+=("$JOB_ID")
         done
+
+        JOB_IDS_CSV=""
+        if [[ ${#JOB_IDS[@]} -gt 0 ]]; then
+            JOB_IDS_CSV="$(IFS=,; echo "${JOB_IDS[*]}")"
+        fi
+
+        python3 "$REPO_DIR/scripts/create_extraction_registry_entry.py" \
+            --extractions-path "$EXTRACTIONS_REL_PATH" \
+            --model "$WEATHER_MODEL" \
+            --model-slug "$MODEL_SLUG" \
+            --dataset "$AML_IMAGES_PATH" \
+            --images-path "$AML_IMAGES_PATH" \
+            --transcriptions-path "$AML_TRANSCRIPTIONS_PATH" \
+            --total-shards "$TOTAL_SHARDS" \
+            --registry-file "$EXTRACTION_REGISTRY_FILE" \
+            ${WEATHER_CHECKPOINT:+--checkpoint-path "$WEATHER_CHECKPOINT"} \
+            ${EXTRACT_LIMIT:+--limit "$EXTRACT_LIMIT"} \
+            ${JOB_IDS_CSV:+--job-ids "$JOB_IDS_CSV"}
+
         echo "Submitted $TOTAL_SHARDS extract job(s)."
+        echo "Extraction registry: $EXTRACTION_REGISTRY_FILE"
         ;;
 
     evaluate)

@@ -261,8 +261,9 @@ def run(argv: list[str] | None = None) -> int:
         print(f"Figure saved to: {saved}")
         return 0
 
-    if command == "batch-extract":
-        # Usage: batch-extract [--model X] [--output-dir PATH]
+    if (
+        command == "batch-extract"
+    ):  # Usage: batch-extract [--model X] [--output-dir PATH]
         #                      [--shard N --total-shards M] [--limit N]
         # Default output: outputs/extractions/<model-slug>/<YYYYMMDD-HHMMSS>/
         # Override with --output-dir to write to a specific path.
@@ -312,10 +313,100 @@ def run(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, indent=2, default=str))
         return 0
 
+    if command == "validate":
+        # Usage: validate --extractions <dir> --test-data <dir>
+        #                 [--output-dir <dir>] [--report-file <path>]
+        #                 [--model <name>] [--tolerance F] [--no-figures]
+        extractions_dir: Path | None = None
+        test_data_dir: Path | None = None
+        output_dir = Path("outputs") / "validation"
+        report_file: Path | None = None
+        tolerance = 0.005
+        no_figures = False
+        explicit_model: bool = False
+        _default_model = config.model.model_name
+        remaining = _parse_model_flag(list(args[1:]), config)
+        explicit_model = config.model.model_name != _default_model
+        while remaining:
+            flag = remaining.pop(0)
+            if flag == "--extractions" and remaining:
+                extractions_dir = Path(remaining.pop(0))
+            elif flag == "--test-data" and remaining:
+                test_data_dir = Path(remaining.pop(0))
+            elif flag == "--output-dir" and remaining:
+                output_dir = Path(remaining.pop(0))
+            elif flag == "--report-file" and remaining:
+                report_file = Path(remaining.pop(0))
+            elif flag == "--tolerance" and remaining:
+                tolerance = float(remaining.pop(0))
+            elif flag == "--no-figures":
+                no_figures = True
+
+        if extractions_dir is None or test_data_dir is None:
+            print(
+                "Usage: validate --extractions <dir> --test-data <dir> "
+                "[--output-dir <dir>] [--report-file <path>] "
+                "[--model <name>] [--tolerance F] [--no-figures]",
+                file=sys.stderr,
+            )
+            return 1
+        if not extractions_dir.exists():
+            print(
+                f"Extractions directory not found: {extractions_dir}", file=sys.stderr
+            )
+            return 1
+        if not test_data_dir.exists():
+            print(f"Test data directory not found: {test_data_dir}", file=sys.stderr)
+            return 1
+
+        from weather_doc_extractor.validate import (
+            generate_figures,
+            load_extraction_results,
+            print_summary,
+            run_validation,
+            save_report,
+        )
+
+        print(f"Loading extraction results from: {extractions_dir}")
+        print(f"Test data directory:             {test_data_dir}")
+        records = load_extraction_results(extractions_dir, test_data_dir)
+        if not records:
+            print("No paired records found — nothing to validate.", file=sys.stderr)
+            return 1
+        print(f"Loaded {len(records)} validation records.")
+
+        report = run_validation(records, tolerance=tolerance)
+        print_summary(report)
+
+        if report_file is None:
+            report_file = output_dir / "report.json"
+        saved = save_report(report, report_file)
+        print(f"\nReport written to: {saved}")
+
+        if not no_figures:
+            figures_dir = output_dir / "figures"
+            print(f"\nGenerating comparison figures → {figures_dir}")
+            if explicit_model:
+                model_label = config.model.model_name.split("/")[-1]
+            else:
+                # Infer from extractions path: .../extractions/<model>/<timestamp>/
+                model_label = (
+                    extractions_dir.parent.name
+                    or config.model.model_name.split("/")[-1]
+                )
+            generate_figures(
+                records,
+                report,
+                figures_dir,
+                model_name=model_label,
+                tolerance=tolerance,
+            )
+        return 0
+
     print(f"Unknown command: {command}")
     print(
         "Available commands: info, stages, ingest, extract, batch-extract, "
-        "evaluate, finetune, visualize"
+        "evaluate, validate, finetune, visualize"
     )
     return 1
 

@@ -387,12 +387,50 @@ def _resolve_model_path(model_name: str) -> str:
     from huggingface_hub import snapshot_download
     from huggingface_hub.utils import LocalEntryNotFoundError
 
+    def _snapshot_is_complete(snapshot_path: Path) -> tuple[bool, str]:
+        """Return (ok, reason) for a cached HF snapshot directory."""
+        cfg = snapshot_path / "config.json"
+        if not cfg.exists():
+            return False, "missing config.json"
+
+        broken = [
+            p for p in snapshot_path.rglob("*") if p.is_symlink() and not p.exists()
+        ]
+        if broken:
+            return False, f"{len(broken)} broken symlink(s)"
+
+        try:
+            cfg_obj = json.loads(cfg.read_text())
+        except Exception:
+            return False, "unreadable config.json"
+
+        # AutoConfig requires model_type for model class dispatch.
+        if not isinstance(cfg_obj, dict) or "model_type" not in cfg_obj:
+            return False, "config.json missing model_type"
+
+        return True, "ok"
+
     # Step 1: already in local cache?
     try:
         local_path = snapshot_download(model_name, local_files_only=True)
+        snapshot_p = Path(local_path)
+        ok, reason = _snapshot_is_complete(snapshot_p)
+        if not ok:
+            print(
+                f"[cache] WARNING — local snapshot for {model_name} is incomplete "
+                f"({reason}); treating as a cache miss and re-downloading.",
+                flush=True,
+            )
+            # Remove the bad snapshot so a forced re-download does not keep
+            # resolving to the same incomplete path.
+            try:
+                shutil.rmtree(snapshot_p, ignore_errors=True)
+            except Exception:
+                pass
+            raise LocalEntryNotFoundError(local_path)
+
         size_mb = (
-            sum(f.stat().st_size for f in Path(local_path).rglob("*") if f.is_file())
-            / 1e6
+            sum(f.stat().st_size for f in snapshot_p.rglob("*") if f.is_file()) / 1e6
         )
         print(
             f"[cache] CACHE HIT (local) — {model_name}\n"
@@ -412,17 +450,14 @@ def _resolve_model_path(model_name: str) -> str:
                 local_files_only=True,
                 cache_dir=original_hf_home,
             )
-            # Validate the snapshot is complete before using it.  A previous job
-            # that crashed mid-download can leave a partial snapshot directory that
-            # causes confusing errors later.
             snapshot_p = Path(remote_path)
-            broken = [
-                p for p in snapshot_p.rglob("*") if p.is_symlink() and not p.exists()
-            ]
-            if not (snapshot_p / "config.json").exists() or broken:
+            # Validate the snapshot is complete before using it. A previous job
+            # that crashed mid-download can leave a partial snapshot directory.
+            ok, reason = _snapshot_is_complete(snapshot_p)
+            if not ok:
                 print(
                     f"[cache] WARNING — blob snapshot for {model_name} is incomplete "
-                    f"({len(broken)} broken symlink(s)); treating as a cache miss "
+                    f"({reason}); treating as a cache miss "
                     f"and re-downloading.",
                     flush=True,
                 )
@@ -489,6 +524,69 @@ def _uses_causal_lm(family: str) -> bool:
     return family == "gemma4"
 
 
+def _load_processor_with_fallback(
+    auto_processor_cls: Any,
+    model_ref: str,
+    resolved_ref: str,
+    proc_kwargs: dict[str, Any],
+) -> Any:
+    """Load an AutoProcessor, retrying from model ID if a cached snapshot is bad.
+
+    When ``resolved_ref`` is a local snapshot path, a partial cache can trigger
+    ``ValueError: Unrecognized processing class ...``. In that case we retry
+    from ``model_ref`` with ``force_download=True`` so transformers can fetch
+    any missing processor metadata.
+    """
+    try:
+        return auto_processor_cls.from_pretrained(resolved_ref, **proc_kwargs)
+    except ValueError as exc:
+        msg = str(exc)
+        if "Unrecognized processing class" not in msg or resolved_ref == model_ref:
+            raise
+
+        print(
+            "[cache] WARNING — cached snapshot is missing processor metadata; "
+            "retrying processor load from model ID with force_download=True.",
+            flush=True,
+        )
+        retry_kwargs = dict(proc_kwargs)
+        retry_kwargs["force_download"] = True
+        return auto_processor_cls.from_pretrained(model_ref, **retry_kwargs)
+
+
+def _load_model_with_fallback(
+    auto_model_cls: Any,
+    model_ref: str,
+    resolved_ref: str,
+    model_kwargs: dict[str, Any],
+) -> Any:
+    """Load an AutoModel, retrying from model ID when cached config is invalid.
+
+    A partial snapshot can contain a truncated ``config.json`` without
+    ``model_type``. In that case, retrying with ``force_download=True`` ensures
+    a fresh config is fetched.
+    """
+    try:
+        return auto_model_cls.from_pretrained(resolved_ref, **model_kwargs)
+    except ValueError as exc:
+        msg = str(exc)
+        if (
+            "Unrecognized model in" not in msg
+            or "model_type" not in msg
+            or resolved_ref == model_ref
+        ):
+            raise
+
+        print(
+            "[cache] WARNING — cached snapshot has invalid model config; "
+            "retrying model load from model ID with force_download=True.",
+            flush=True,
+        )
+        retry_kwargs = dict(model_kwargs)
+        retry_kwargs["force_download"] = True
+        return auto_model_cls.from_pretrained(model_ref, **retry_kwargs)
+
+
 def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
     """Load the processor and model from HuggingFace (or a local LoRA adapter).
 
@@ -546,7 +644,12 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
     use_causal = _uses_causal_lm(family)
     model_cls = AutoModelForCausalLM if use_causal else AutoModelForImageTextToText
 
-    extra_kwargs: dict[str, Any] = {"trust_remote_code": True}
+    # granite4 has native transformers 5.8+ support; passing trust_remote_code=True
+    # would load the stale custom modeling.py from hf_cache which lacks the
+    # cache_position argument that transformers 5.x passes to create_causal_mask.
+    extra_kwargs: dict[str, Any] = (
+        {} if family == "granite4" else {"trust_remote_code": True}
+    )
     if hf_cache_dir:
         extra_kwargs["cache_dir"] = hf_cache_dir
 
@@ -562,28 +665,52 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         base_model_name = adapter_cfg["base_model_name_or_path"]
         resolved_name = _resolve_model_path(base_model_name)
 
-        proc_kwargs: dict[str, Any] = {"trust_remote_code": True}
+        proc_kwargs: dict[str, Any] = (
+            {} if family == "granite4" else {"trust_remote_code": True}
+        )
         if hf_cache_dir:
             proc_kwargs["cache_dir"] = hf_cache_dir
-        processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
-        base = model_cls.from_pretrained(
+        processor = _load_processor_with_fallback(
+            AutoProcessor,
+            base_model_name,
             resolved_name,
-            torch_dtype=_gpu_dtype(),
-            device_map=model_device_map,
+            proc_kwargs,
+        )
+        model_kwargs: dict[str, Any] = {
+            "torch_dtype": _gpu_dtype(),
+            "device_map": model_device_map,
             **extra_kwargs,
+        }
+        base = _load_model_with_fallback(
+            model_cls,
+            base_model_name,
+            resolved_name,
+            model_kwargs,
         )
         model = PeftModel.from_pretrained(base, str(adapter_dir))
     else:
         resolved_name = _resolve_model_path(config.model_name)
-        proc_kwargs = {"trust_remote_code": True}
+        proc_kwargs: dict[str, Any] = (
+            {} if family == "granite4" else {"trust_remote_code": True}
+        )
         if hf_cache_dir:
             proc_kwargs["cache_dir"] = hf_cache_dir
-        processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
-        model = model_cls.from_pretrained(
+        processor = _load_processor_with_fallback(
+            AutoProcessor,
+            config.model_name,
             resolved_name,
-            torch_dtype=_gpu_dtype(),
-            device_map=model_device_map,
+            proc_kwargs,
+        )
+        model_kwargs = {
+            "torch_dtype": _gpu_dtype(),
+            "device_map": model_device_map,
             **extra_kwargs,
+        }
+        model = _load_model_with_fallback(
+            model_cls,
+            config.model_name,
+            resolved_name,
+            model_kwargs,
         )
 
     model.eval()

@@ -4,6 +4,8 @@ import unittest
 from weather_doc_extractor.inference import (
     EXTRACTION_PROMPT,
     _extract_object,
+    _load_model_with_fallback,
+    _load_processor_with_fallback,
     build_messages,
     detect_model_family,
     parse_extraction_response,
@@ -305,6 +307,114 @@ class BuildMessagesTests(unittest.TestCase):
             "December",
         ]:
             self.assertIn(month, prompt_text)
+
+
+class ProcessorFallbackTests(unittest.TestCase):
+    def test_retries_from_model_id_on_unrecognized_processing_class(self) -> None:
+        class _FakeAutoProcessor:
+            calls: list[tuple[str, dict]] = []
+
+            @classmethod
+            def from_pretrained(cls, name: str, **kwargs):  # type: ignore[no-untyped-def]
+                cls.calls.append((name, dict(kwargs)))
+                if name == "/tmp/bad-snapshot":
+                    raise ValueError(
+                        "Unrecognized processing class in /tmp/bad-snapshot"
+                    )
+                return {"loaded": name, "kwargs": kwargs}
+
+        proc = _load_processor_with_fallback(
+            _FakeAutoProcessor,
+            "google/gemma-4-E4B-it",
+            "/tmp/bad-snapshot",
+            {"trust_remote_code": True, "cache_dir": "/tmp/hf_cache/hub"},
+        )
+
+        self.assertEqual(_FakeAutoProcessor.calls[0][0], "/tmp/bad-snapshot")
+        self.assertEqual(_FakeAutoProcessor.calls[1][0], "google/gemma-4-E4B-it")
+        self.assertTrue(_FakeAutoProcessor.calls[1][1].get("force_download"))
+        self.assertEqual(proc["loaded"], "google/gemma-4-E4B-it")
+
+    def test_does_not_retry_for_other_value_errors(self) -> None:
+        class _FakeAutoProcessor:
+            @classmethod
+            def from_pretrained(cls, name: str, **kwargs):  # type: ignore[no-untyped-def]
+                raise ValueError("Some other processor error")
+
+        with self.assertRaisesRegex(ValueError, "Some other processor error"):
+            _load_processor_with_fallback(
+                _FakeAutoProcessor,
+                "google/gemma-4-E4B-it",
+                "/tmp/bad-snapshot",
+                {"trust_remote_code": True},
+            )
+
+
+class ModelFallbackTests(unittest.TestCase):
+    def test_retries_from_model_id_on_missing_model_type(self) -> None:
+        class _FakeAutoModel:
+            calls: list[tuple[str, dict]] = []
+
+            @classmethod
+            def from_pretrained(cls, name: str, **kwargs):  # type: ignore[no-untyped-def]
+                cls.calls.append((name, dict(kwargs)))
+                if name == "/tmp/bad-snapshot":
+                    raise ValueError(
+                        "Unrecognized model in /tmp/bad-snapshot. "
+                        "Should have a `model_type` key in its config.json."
+                    )
+                return {"loaded": name, "kwargs": kwargs}
+
+        mdl = _load_model_with_fallback(
+            _FakeAutoModel,
+            "google/gemma-4-E4B-it",
+            "/tmp/bad-snapshot",
+            {"trust_remote_code": True, "cache_dir": "/tmp/hf_cache/hub"},
+        )
+
+        self.assertEqual(_FakeAutoModel.calls[0][0], "/tmp/bad-snapshot")
+        self.assertEqual(_FakeAutoModel.calls[1][0], "google/gemma-4-E4B-it")
+        self.assertTrue(_FakeAutoModel.calls[1][1].get("force_download"))
+        self.assertEqual(mdl["loaded"], "google/gemma-4-E4B-it")
+
+    def test_does_not_retry_for_other_model_value_errors(self) -> None:
+        class _FakeAutoModel:
+            @classmethod
+            def from_pretrained(cls, name: str, **kwargs):  # type: ignore[no-untyped-def]
+                raise ValueError("Some other model error")
+
+        with self.assertRaisesRegex(ValueError, "Some other model error"):
+            _load_model_with_fallback(
+                _FakeAutoModel,
+                "google/gemma-4-E4B-it",
+                "/tmp/bad-snapshot",
+                {"trust_remote_code": True},
+            )
+
+
+class Granite4TrustRemoteCodeTests(unittest.TestCase):
+    """Granite4 has native transformers 5.8+ support so must not get trust_remote_code=True.
+
+    The stale custom modeling.py downloaded via trust_remote_code in older envs
+    doesn't accept the cache_position kwarg that transformers 5.x passes to
+    create_causal_mask, causing a TypeError at inference time.
+    """
+
+    def test_granite4_not_in_trust_remote_code_families(self) -> None:
+        """granite4 must be excluded from the trust_remote_code=True blanket."""
+        import inspect
+
+        from weather_doc_extractor.inference import _load_model_and_processor
+
+        src = inspect.getsource(_load_model_and_processor)
+        # The conditional should exclude granite4 from trust_remote_code=True.
+        # Verify the source contains the exclusion pattern.
+        self.assertIn('family == "granite4"', src)
+        # Verify we do NOT apply trust_remote_code unconditionally.
+        self.assertNotIn(
+            'extra_kwargs: dict[str, Any] = {"trust_remote_code": True}',
+            src,
+        )
 
 
 if __name__ == "__main__":

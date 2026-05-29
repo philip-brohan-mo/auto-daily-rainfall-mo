@@ -10,6 +10,8 @@
 #   images                Upload local images dir  → $AML_IMAGES_PATH
 #   transcriptions        Upload local transcriptions dir → $AML_TRANSCRIPTIONS_PATH
 #   all                   Upload both images and transcriptions
+#   test_real             Upload test_data/real/ (images + transcriptions) to datastore
+#   test_fake             Upload test_data/fake/ (images + transcriptions) to datastore
 #   --src DIR --dst PATH  Upload any local directory to a custom datastore path
 #
 # ── Options ───────────────────────────────────────────────────────────────────
@@ -52,7 +54,7 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        images|transcriptions|all) TARGETS+=("$1"); shift ;;
+        images|transcriptions|all|test_real|test_fake) TARGETS+=("$1"); shift ;;
         --src)             CUSTOM_SRC="$2"; shift 2 ;;
         --dst)             CUSTOM_DST="$2"; shift 2 ;;
         --local-images)    LOCAL_IMAGES="$2"; shift 2 ;;
@@ -64,7 +66,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#TARGETS[@]} -eq 0 && -z "$CUSTOM_SRC" ]]; then
-    echo "Error: specify what to upload (images|transcriptions|all) or --src/--dst" >&2
+    echo "Error: specify what to upload (images|transcriptions|all|test_real|test_fake) or --src/--dst" >&2
     usage 1
 fi
 
@@ -136,6 +138,14 @@ for target in "${TARGETS[@]}"; do
         all)
             do_upload "$LOCAL_IMAGES" "$AML_IMAGES_PATH"
             do_upload "$LOCAL_TRANSCRIPTIONS" "$AML_TRANSCRIPTIONS_PATH"
+            ;;
+        test_real)
+            do_upload "${REPO_DIR}/test_data/real/images" "test_data/real/images"
+            do_upload "${REPO_DIR}/test_data/real/transcriptions" "test_data/real/transcriptions"
+            ;;
+        test_fake)
+            do_upload "${REPO_DIR}/test_data/fake/images" "test_data/fake/images"
+            do_upload "${REPO_DIR}/test_data/fake/transcriptions" "test_data/fake/transcriptions"
             ;;
     esac
 done

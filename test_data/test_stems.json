@@ -1,0 +1,26 @@
+{
+  "real": [
+    "DRain_1871-1880_Cornwall-59",
+    "DRain_1901-1910_RainNos_Bedfordshire-150",
+    "DRain_1911-1920_RainNos_Essex_I-Y-292",
+    "DRain_1921-1930_RainNos_Essex_A-H-438",
+    "DRain_1921-1930_RainNos_Sussex_A-CHI_B009-1",
+    "DRain_1931-1940_RainNos_2185-2217_B035-1",
+    "DRain_1931-1940_RainNos_751-780_B020-5",
+    "DRain_1941-1950_RainNos_2644-2688_B040-6",
+    "DRain_1951-1962_RainNos_0387-0416-288",
+    "DRain_1951-1962_RainNos_2478-2500_B009-12"
+  ],
+  "fake": [
+    "DRain_1851-1860_Bedfordshire-440",
+    "DRain_1861-1870_Surrey-402",
+    "DRain_1871-1880_Warwickshire-768",
+    "DRain_1881-1890_Westmorland-51",
+    "DRain_1901-1910_Cumberland-489",
+    "DRain_1911-1920_Dorset-268",
+    "DRain_1921-1930_Hampshire-2",
+    "DRain_1931-1940_Gloucestershire-3",
+    "DRain_1941-1950_Cornwall-861",
+    "DRain_1951-1960_Cumberland-18"
+  ]
+}
