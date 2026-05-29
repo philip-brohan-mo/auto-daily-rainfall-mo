@@ -647,7 +647,9 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
     # granite4 has native transformers 5.8+ support; passing trust_remote_code=True
     # would load the stale custom modeling.py from hf_cache which lacks the
     # cache_position argument that transformers 5.x passes to create_causal_mask.
-    extra_kwargs: dict[str, Any] = {} if family == "granite4" else {"trust_remote_code": True}
+    extra_kwargs: dict[str, Any] = (
+        {} if family == "granite4" else {"trust_remote_code": True}
+    )
     if hf_cache_dir:
         extra_kwargs["cache_dir"] = hf_cache_dir
 
@@ -663,7 +665,9 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         base_model_name = adapter_cfg["base_model_name_or_path"]
         resolved_name = _resolve_model_path(base_model_name)
 
-        proc_kwargs: dict[str, Any] = {} if family == "granite4" else {"trust_remote_code": True}
+        proc_kwargs: dict[str, Any] = (
+            {} if family == "granite4" else {"trust_remote_code": True}
+        )
         if hf_cache_dir:
             proc_kwargs["cache_dir"] = hf_cache_dir
         processor = _load_processor_with_fallback(
@@ -686,7 +690,9 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         model = PeftModel.from_pretrained(base, str(adapter_dir))
     else:
         resolved_name = _resolve_model_path(config.model_name)
-        proc_kwargs: dict[str, Any] = {} if family == "granite4" else {"trust_remote_code": True}
+        proc_kwargs: dict[str, Any] = (
+            {} if family == "granite4" else {"trust_remote_code": True}
+        )
         if hf_cache_dir:
             proc_kwargs["cache_dir"] = hf_cache_dir
         processor = _load_processor_with_fallback(

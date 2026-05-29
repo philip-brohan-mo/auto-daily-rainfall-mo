@@ -59,6 +59,39 @@
 #     1. bash scripts/aml_submit.sh --checkpoint outputs/checkpoints/granite-fake-20260526-143000 extract
 #     2. bash scripts/aml_submit.sh --checkpoint outputs/checkpoints/granite4-fake-20260526-150000 extract
 
+# ── Extraction Run Registry ───────────────────────────────────────────────────
+# Extraction submissions are auto-registered in:
+#   outputs/extraction_registry.json
+#
+# Each entry captures:
+#   - extraction output path (e.g. outputs/extractions/gemma4/20260529-121736)
+#   - model/model slug
+#   - dataset paths used
+#   - shard count, optional limit, and Azure job IDs
+#
+# List registered extraction runs:
+#   bash scripts/list_extractions.sh
+#   bash scripts/list_extractions.sh --format json
+#
+# Use a custom registry location:
+#   bash scripts/aml_submit.sh \
+#       --dataset test_real \
+#       --model gemma4 \
+#       --extraction-registry outputs/my_extraction_registry.json \
+#       extract
+#
+# Backfill an older extraction directory manually (if needed):
+#   python scripts/create_extraction_registry_entry.py \
+#       --extractions-path outputs/extractions/gemma4/20260529-121736 \
+#       --model gemma4 \
+#       --model-slug gemma4 \
+#       --dataset test_data/real/images \
+#       --images-path test_data/real/images \
+#       --transcriptions-path test_data/real/transcriptions \
+#       --total-shards 1 \
+#       --registry-file outputs/extraction_registry.json \
+#       --notes "Backfilled run submitted before registry existed"
+
 # ── Extracting with a Checkpoint ──────────────────────────────────────────────
 # Syntax: bash scripts/aml_submit.sh [--dataset real|fake] --checkpoint PATH extract
 #
