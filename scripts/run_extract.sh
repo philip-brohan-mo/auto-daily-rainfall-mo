@@ -34,15 +34,15 @@ if [[ -n "${BATCH_SIZE:-}" ]]; then
     BATCH_SIZE_FLAG="--batch-size $BATCH_SIZE"
 fi
 
-# Use checkpoint if provided and it's not the placeholder path (which is images_dir).
-# On Azure, the mounted checkpoint path may not pass `-d` check during script execution.
-if [[ -n "${WEATHER_CHECKPOINT:-}" ]] && [[ "$WEATHER_CHECKPOINT" != "$WEATHER_IMAGES_DIR" ]]; then
+# Use checkpoint only when adapter files exist at the mounted path.
+# This avoids treating the default placeholder input mount as a real checkpoint.
+if [[ -n "${WEATHER_CHECKPOINT:-}" ]] && [[ -f "$WEATHER_CHECKPOINT/adapter_config.json" ]]; then
     MODEL="$WEATHER_CHECKPOINT"
     echo "[run_extract] Using checkpoint: $WEATHER_CHECKPOINT" >&2
 else
     MODEL="${WEATHER_MODEL:-smolvlm}"
     if [[ -n "${WEATHER_CHECKPOINT:-}" ]]; then
-        echo "[run_extract] Checkpoint validation skipped (is placeholder). Using model: $MODEL" >&2
+        echo "[run_extract] No adapter_config.json at checkpoint mount; using base model: $MODEL" >&2
     fi
 fi
 MODEL_FLAG="--model $MODEL"
