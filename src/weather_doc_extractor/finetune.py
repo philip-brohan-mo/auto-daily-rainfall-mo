@@ -44,6 +44,15 @@ def _ground_truth_json(record: DailyRainfallRecord) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _remote_code_kwargs_for_family(family: str) -> dict[str, bool]:
+    """Return trust_remote_code kwargs for the given model family.
+
+    granite4 has native support in transformers>=5.8.0; forcing
+    trust_remote_code=True can load stale cached custom modules.
+    """
+    return {} if family == "granite4" else {"trust_remote_code": True}
+
+
 def build_training_example(
     record: DailyRainfallRecord,
     family: str,
@@ -379,7 +388,7 @@ def run_finetune(
     resolved_name = _resolve_model_path(model_config.model_name)
 
     # Load processor and model
-    proc_kwargs: dict[str, Any] = {"trust_remote_code": True}
+    proc_kwargs: dict[str, Any] = _remote_code_kwargs_for_family(family)
     if hf_cache_dir:
         proc_kwargs["cache_dir"] = hf_cache_dir
     processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
@@ -388,7 +397,7 @@ def run_finetune(
     model_kwargs: dict[str, Any] = {
         "torch_dtype": dtype,
         "device_map": model_config.device,
-        "trust_remote_code": True,
+        **_remote_code_kwargs_for_family(family),
     }
     if hf_cache_dir:
         model_kwargs["cache_dir"] = hf_cache_dir

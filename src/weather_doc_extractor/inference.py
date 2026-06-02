@@ -286,9 +286,36 @@ def parse_extraction_response(text: str) -> DailyRainfallGrid | None:
 
 
 def _is_adapter_path(name: str) -> bool:
-    """Return True if *name* is a local directory containing a LoRA adapter."""
+    """Return True if *name* is a local directory containing a LoRA adapter.
+
+    A path is considered an adapter path if:
+    1. It's an existing directory with adapter_config.json, OR
+    2. It looks like a checkpoint path (contains /outputs/checkpoints/) even if
+       the directory doesn't exist yet (e.g., when passed as an Azure mount path).
+    """
     p = Path(name)
-    return p.is_dir() and (p / "adapter_config.json").exists()
+
+    # Existing directory with adapter_config.json
+    if p.is_dir() and (p / "adapter_config.json").exists():
+        print(
+            f"[adapter] Path recognized as adapter (has adapter_config.json): {name}",
+            flush=True,
+        )
+        return True
+
+    # Looks like a checkpoint path from the registry
+    # (e.g., "Daily_rainfall_sample/outputs/checkpoints/...")
+    is_checkpoint_pattern = "/outputs/checkpoints/" in str(
+        name
+    ) or "\\outputs\\checkpoints\\" in str(name)
+    if is_checkpoint_pattern:
+        print(
+            f"[adapter] Path recognized as checkpoint (matches pattern): {name}",
+            flush=True,
+        )
+        return True
+
+    return False
 
 
 def _gpu_dtype() -> "torch.dtype":
@@ -655,63 +682,109 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
 
     model_device_map: str | None = config.device
 
+    print(
+        f"[load_model] Attempting to load: {config.model_name}",
+        flush=True,
+    )
+
     if _is_adapter_path(config.model_name):
         import json as _json
 
         from peft import PeftModel
 
         adapter_dir = Path(config.model_name)
-        adapter_cfg = _json.loads((adapter_dir / "adapter_config.json").read_text())
-        base_model_name = adapter_cfg["base_model_name_or_path"]
-        resolved_name = _resolve_model_path(base_model_name)
+        adapter_cfg_path = adapter_dir / "adapter_config.json"
 
-        proc_kwargs: dict[str, Any] = (
-            {} if family == "granite4" else {"trust_remote_code": True}
+        if not adapter_cfg_path.exists():
+            print(
+                f"[adapter] WARNING: adapter_config.json not found at {adapter_cfg_path}; "
+                f"treating {config.model_name} as a base model name.",
+                flush=True,
+            )
+            # Fall through to base model loading below
+        else:
+            try:
+                adapter_cfg = _json.loads(adapter_cfg_path.read_text())
+                base_model_name = adapter_cfg["base_model_name_or_path"]
+                print(
+                    f"[adapter] Loading checkpoint from {config.model_name}\n"
+                    f"           Base model: {base_model_name}",
+                    flush=True,
+                )
+                resolved_name = _resolve_model_path(base_model_name)
+
+                proc_kwargs: dict[str, Any] = (
+                    {} if family == "granite4" else {"trust_remote_code": True}
+                )
+                if hf_cache_dir:
+                    proc_kwargs["cache_dir"] = hf_cache_dir
+                processor = _load_processor_with_fallback(
+                    AutoProcessor,
+                    base_model_name,
+                    resolved_name,
+                    proc_kwargs,
+                )
+                model_kwargs: dict[str, Any] = {
+                    "torch_dtype": _gpu_dtype(),
+                    "device_map": model_device_map,
+                    **extra_kwargs,
+                }
+                base = _load_model_with_fallback(
+                    model_cls,
+                    base_model_name,
+                    resolved_name,
+                    model_kwargs,
+                )
+                model = PeftModel.from_pretrained(base, str(adapter_dir))
+                print(
+                    f"[adapter] LoRA adapter loaded successfully.",
+                    flush=True,
+                )
+
+                model.eval()
+                _sync_cache_to_remote(local_cache)
+                return processor, model
+            except Exception as exc:
+                print(
+                    f"[adapter] WARNING: failed to load adapter ({exc}); "
+                    f"falling back to base model loading.",
+                    flush=True,
+                )
+                # Fall through to base model loading below
+
+    # Base model loading (either no adapter was provided, or adapter loading failed)
+    if _is_adapter_path(config.model_name):
+        # This was marked as an adapter path but couldn't be loaded; try as a base model
+        print(
+            f"[model] **CRITICAL**: Checkpoint path provided but adapter not found/loaded!"
+            f"\n         Path: {config.model_name}"
+            f"\n         Falling back to base model - extraction will use UNTRAINED model!",
+            flush=True,
         )
-        if hf_cache_dir:
-            proc_kwargs["cache_dir"] = hf_cache_dir
-        processor = _load_processor_with_fallback(
-            AutoProcessor,
-            base_model_name,
-            resolved_name,
-            proc_kwargs,
-        )
-        model_kwargs: dict[str, Any] = {
-            "torch_dtype": _gpu_dtype(),
-            "device_map": model_device_map,
-            **extra_kwargs,
-        }
-        base = _load_model_with_fallback(
-            model_cls,
-            base_model_name,
-            resolved_name,
-            model_kwargs,
-        )
-        model = PeftModel.from_pretrained(base, str(adapter_dir))
-    else:
-        resolved_name = _resolve_model_path(config.model_name)
-        proc_kwargs: dict[str, Any] = (
-            {} if family == "granite4" else {"trust_remote_code": True}
-        )
-        if hf_cache_dir:
-            proc_kwargs["cache_dir"] = hf_cache_dir
-        processor = _load_processor_with_fallback(
-            AutoProcessor,
-            config.model_name,
-            resolved_name,
-            proc_kwargs,
-        )
-        model_kwargs = {
-            "torch_dtype": _gpu_dtype(),
-            "device_map": model_device_map,
-            **extra_kwargs,
-        }
-        model = _load_model_with_fallback(
-            model_cls,
-            config.model_name,
-            resolved_name,
-            model_kwargs,
-        )
+
+    resolved_name = _resolve_model_path(config.model_name)
+    proc_kwargs: dict[str, Any] = (
+        {} if family == "granite4" else {"trust_remote_code": True}
+    )
+    if hf_cache_dir:
+        proc_kwargs["cache_dir"] = hf_cache_dir
+    processor = _load_processor_with_fallback(
+        AutoProcessor,
+        config.model_name,
+        resolved_name,
+        proc_kwargs,
+    )
+    model_kwargs: dict[str, Any] = {
+        "torch_dtype": _gpu_dtype(),
+        "device_map": model_device_map,
+        **extra_kwargs,
+    }
+    model = _load_model_with_fallback(
+        model_cls,
+        config.model_name,
+        resolved_name,
+        model_kwargs,
+    )
 
     model.eval()
 

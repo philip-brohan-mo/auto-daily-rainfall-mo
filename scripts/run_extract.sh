@@ -34,8 +34,17 @@ if [[ -n "${BATCH_SIZE:-}" ]]; then
     BATCH_SIZE_FLAG="--batch-size $BATCH_SIZE"
 fi
 
-# Use checkpoint if provided, otherwise use default model
-MODEL="${WEATHER_CHECKPOINT:-${WEATHER_MODEL:-smolvlm}}"
+# Use checkpoint if provided and it's not the placeholder path (which is images_dir).
+# On Azure, the mounted checkpoint path may not pass `-d` check during script execution.
+if [[ -n "${WEATHER_CHECKPOINT:-}" ]] && [[ "$WEATHER_CHECKPOINT" != "$WEATHER_IMAGES_DIR" ]]; then
+    MODEL="$WEATHER_CHECKPOINT"
+    echo "[run_extract] Using checkpoint: $WEATHER_CHECKPOINT" >&2
+else
+    MODEL="${WEATHER_MODEL:-smolvlm}"
+    if [[ -n "${WEATHER_CHECKPOINT:-}" ]]; then
+        echo "[run_extract] Checkpoint validation skipped (is placeholder). Using model: $MODEL" >&2
+    fi
+fi
 MODEL_FLAG="--model $MODEL"
 
 echo "[run_extract] shard=$SHARD/$TOTAL_SHARDS images=$WEATHER_IMAGES_DIR output=$OUTPUT_DIR model=$MODEL ${LIMIT_FLAG:+limit=$EXTRACT_LIMIT} ${BATCH_SIZE_FLAG:+batch=$BATCH_SIZE}"

@@ -29,6 +29,10 @@ inputs:
     type: uri_folder
     path: azureml://datastores/workspaceblobstore/paths/Daily_rainfall_sample/images
     mode: ro_mount
+  checkpoint_dir:
+    type: uri_folder
+    path: azureml://datastores/workspaceblobstore/paths/Daily_rainfall_sample/images
+    mode: ro_mount
 
 # ── Outputs ───────────────────────────────────────────────────────────────────
 outputs:
@@ -49,10 +53,12 @@ outputs:
 # overridden per-submission with: --set environment_variables.SHARD=<n>
 # Add --set environment_variables.EXTRACT_LIMIT=5 to process only 5 images.
 # PYTHONPATH=src makes the local package importable without pip install.
+# WEATHER_CHECKPOINT is set if a checkpoint input is provided; otherwise empty.
 command: >-
   export WEATHER_IMAGES_DIR=${{inputs.images_dir}} &&
   export OUTPUT_DIR=${{outputs.extractions}} &&
   export HF_HOME=${{outputs.hf_cache}} &&
+  export WEATHER_CHECKPOINT=${{inputs.checkpoint_dir}} &&
   bash scripts/run_extract.sh
 
 # ── Environment variables ─────────────────────────────────────────────────────

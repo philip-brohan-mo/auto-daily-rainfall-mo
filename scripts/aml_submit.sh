@@ -35,6 +35,8 @@
 #   --extraction-registry FILE
 #                           Local JSON registry file for submitted extraction runs
 #                           (default: outputs/extraction_registry.json)
+#   --model-registry FILE   Local JSON registry file for fine-tuned checkpoints
+#                           (default: outputs/model_registry.json)
 #   --clear-modules         Delete stale HF transformers_modules cache before running.
 #                           Use after upgrading transformers to fix custom-model errors.
 #   --help                  Show this message
@@ -80,6 +82,7 @@ BATCH_SIZE="${BATCH_SIZE:-1}"
 WEATHER_MODEL="${WEATHER_MODEL:-smolvlm}"
 WEATHER_CHECKPOINT=""
 EXTRACTION_REGISTRY_FILE="${EXTRACTION_REGISTRY_FILE:-outputs/extraction_registry.json}"
+MODEL_REGISTRY_FILE="${MODEL_REGISTRY_FILE:-outputs/model_registry.json}"
 CLEAR_HF_MODULES="0"
 HF_TOKEN="${HF_TOKEN:-}"
 AML_ENV_VARIANT="${AML_ENV_VARIANT:-v100}"
@@ -122,6 +125,7 @@ while [[ $# -gt 0 ]]; do
         --transcriptions-path) AML_TRANSCRIPTIONS_PATH="$2"; shift 2 ;;
         --checkpoint)        WEATHER_CHECKPOINT="$2";    shift 2 ;;
         --extraction-registry) EXTRACTION_REGISTRY_FILE="$2"; shift 2 ;;
+        --model-registry)    MODEL_REGISTRY_FILE="$2"; shift 2 ;;
         --clear-modules)     CLEAR_HF_MODULES="1";         shift ;;
         --help|-h)           usage 0 ;;
         extract|evaluate|finetune|env) COMMAND="$1"; shift ;;
@@ -170,6 +174,23 @@ else
 fi
 RUN_TIMESTAMP="$(date -u +%Y%m%d-%H%M%S)"
 EXTRACTIONS_REL_PATH="$AML_OUTPUTS_PATH/extractions/$MODEL_SLUG/$RUN_TIMESTAMP"
+CHECKPOINT_RUN_SLUG="${MODEL_SLUG}-${RUN_TIMESTAMP}"
+CHECKPOINTS_REL_PATH="$AML_OUTPUTS_PATH/checkpoints/$CHECKPOINT_RUN_SLUG"
+# Fine-tune saves under the resolved full model ID slug ("/" -> "--"), not
+# the short preset name. Resolve the effective model name so registry paths
+# always match the actual folder written by run_finetune().
+case "$WEATHER_MODEL" in
+    smolvlm)   RESOLVED_TRAINING_MODEL_NAME="HuggingFaceTB/SmolVLM-500M-Instruct" ;;
+    smolvlm2)  RESOLVED_TRAINING_MODEL_NAME="HuggingFaceTB/SmolVLM2-2.2B-Instruct" ;;
+    granite)   RESOLVED_TRAINING_MODEL_NAME="ibm-granite/granite-vision-3.2-2b" ;;
+    granite4)  RESOLVED_TRAINING_MODEL_NAME="ibm-granite/granite-vision-4.1-4b" ;;
+    gemma3)    RESOLVED_TRAINING_MODEL_NAME="google/gemma-3-4b-it" ;;
+    gemma4)    RESOLVED_TRAINING_MODEL_NAME="google/gemma-4-E4B-it" ;;
+    ministral) RESOLVED_TRAINING_MODEL_NAME="mistralai/Mistral-Small-3.1-24B-Instruct-2503" ;;
+    *)         RESOLVED_TRAINING_MODEL_NAME="$WEATHER_MODEL" ;;
+esac
+TRAINING_MODEL_SLUG="${RESOLVED_TRAINING_MODEL_NAME//\//--}"
+CHECKPOINT_PATH="$CHECKPOINTS_REL_PATH/$TRAINING_MODEL_SLUG"
 
 # Resolved datastore URIs
 IMAGES_URI="$AML_DATASTORE_BASE/$AML_IMAGES_PATH"
@@ -228,11 +249,11 @@ case "$COMMAND" in
                 --set inputs.images_dir.path="$IMAGES_URI" \
                 --set outputs.extractions.path="$EXTRACTIONS_URI" \
                 --set outputs.hf_cache.path="$HF_CACHE_URI" \
+                --set inputs.checkpoint_dir.path="${CHECKPOINT_URI:-$IMAGES_URI}" \
                 --set environment_variables.SHARD="$i" \
                 --set environment_variables.TOTAL_SHARDS="$TOTAL_SHARDS" \
                 --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
                 --set environment_variables.BATCH_SIZE="$BATCH_SIZE" \
-                ${CHECKPOINT_URI:+--set environment_variables.WEATHER_CHECKPOINT="$CHECKPOINT_URI"} \
                 ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
                 --set environment_variables.CLEAR_HF_MODULES="$CLEAR_HF_MODULES" \
                 ${HF_TOKEN:+--set environment_variables.HF_TOKEN="$HF_TOKEN"} \
@@ -286,6 +307,7 @@ case "$COMMAND" in
 
     finetune)
         echo "Submitting finetune job..."
+        echo "  Checkpoint output: $AML_DATASTORE_BASE/$CHECKPOINTS_REL_PATH"
         JOB_ID=$(az ml job create \
             --file "$REPO_DIR/azureml/finetune_job.yml" \
             "${AML_ARGS[@]}" \
@@ -293,22 +315,26 @@ case "$COMMAND" in
             ${AML_ENV_OVERRIDE:+$AML_ENV_OVERRIDE} \
             --set inputs.images_dir.path="$IMAGES_URI" \
             --set inputs.transcriptions_dir.path="$TRANSCRIPTIONS_URI" \
-            --set outputs.checkpoints.path="$OUTPUTS_URI/checkpoints" \
+            --set outputs.checkpoints.path="$AML_DATASTORE_BASE/$CHECKPOINTS_REL_PATH" \
             --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
             ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
             ${HF_TOKEN:+--set environment_variables.HF_TOKEN="$HF_TOKEN"} \
             --set display_name="finetune-${MODEL_SLUG}" \
             --query name --output tsv)
         echo "Finetune job submitted: $JOB_ID"
+
+        python3 "$REPO_DIR/scripts/create_model_registry_entry.py" \
+            --checkpoint-path "$CHECKPOINT_PATH" \
+            --base-model "$WEATHER_MODEL" \
+            --dataset "$AML_IMAGES_PATH" \
+            --registry-file "$MODEL_REGISTRY_FILE" \
+            --job-id "$JOB_ID" \
+            --status submitted \
+            --notes "Auto-registered on finetune submit"
+
+        echo "Model registry: $MODEL_REGISTRY_FILE"
         echo
-        echo "After the job completes, register the checkpoint:"
-        echo "  python scripts/create_model_registry_entry.py \\"
-        echo "    --checkpoint-path outputs/checkpoints/CHECKPOINT_NAME \\"
-        echo "    --base-model $WEATHER_MODEL \\"
-        echo "    --dataset $AML_IMAGES_PATH \\"
-        echo "    --registry-file outputs/model_registry.json"
-        echo
-        echo "Then extract using the checkpoint:"
-        echo "  bash scripts/aml_submit.sh --checkpoint outputs/checkpoints/CHECKPOINT_NAME extract"
+        echo "Checkpoint path for extraction (once job completes):"
+        echo "  bash scripts/aml_submit.sh --checkpoint $CHECKPOINT_PATH extract"
         ;;
 esac

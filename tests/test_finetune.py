@@ -10,6 +10,7 @@ import pytest
 
 from weather_doc_extractor.finetune import (
     _ground_truth_json,
+    _remote_code_kwargs_for_family,
     build_training_example,
     build_training_examples,
 )
@@ -227,6 +228,20 @@ class TestBuildTrainingExamples:
         user_content = examples[0]["messages"][0]["content"]
         img_item = next(c for c in user_content if c.get("type") == "image")
         assert isinstance(img_item.get("image"), PILImage.Image)
+
+
+# ---------------------------------------------------------------------------
+# trust_remote_code behavior by model family
+# ---------------------------------------------------------------------------
+
+
+class TestRemoteCodeKwargs:
+    def test_granite4_disables_trust_remote_code(self):
+        assert _remote_code_kwargs_for_family("granite4") == {}
+
+    def test_other_families_keep_trust_remote_code(self):
+        assert _remote_code_kwargs_for_family("granite") == {"trust_remote_code": True}
+        assert _remote_code_kwargs_for_family("gemma4") == {"trust_remote_code": True}
 
     def test_granite4_family_produces_embedded_pil(self, tmp_path):
         from PIL import Image as PILImage
