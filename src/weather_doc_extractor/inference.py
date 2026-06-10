@@ -861,8 +861,6 @@ def extract_grid_batch_with_model(
             "Install the 'train' extras to run inference: pip install -e '.[train]'"
         ) from exc
 
-    images = [PILImage.open(p).convert("RGB") for p in image_paths]
-
     do_sample = config.temperature > 0.0
     generate_kwargs: dict[str, Any] = dict(
         max_new_tokens=config.max_new_tokens,
@@ -871,16 +869,71 @@ def extract_grid_batch_with_model(
     if do_sample:
         generate_kwargs["temperature"] = config.temperature
 
-    if family.startswith("granite") or family in ("gemma3", "gemma4"):
-        # These families require per-image processing: Granite and Gemma 3 embed
-        # the image in the message, Gemma 4 has a processor API that is
-        # not straightforwardly batched.
-        return [
-            extract_grid_with_model(p, config, processor, model, family)
+    images = [PILImage.open(p).convert("RGB") for p in image_paths]
+
+    if family.startswith("granite") or family == "gemma3":
+        # Granite 4 / Gemma 3: batch by passing one conversation per sample,
+        # each with its own embedded PIL image.
+        messages_batch = [
+            build_messages(p, model_family=family, pil_image=img)
+            for p, img in zip(image_paths, images)
+        ]
+        template_kwargs: dict[str, Any] = {
+            "add_generation_prompt": True,
+            "tokenize": True,
+            "return_dict": True,
+            "return_tensors": "pt",
+            "padding": True,
+        }
+        if family == "gemma3":
+            template_kwargs["do_pan_and_scan"] = True
+
+        inputs = processor.apply_chat_template(messages_batch, **template_kwargs)
+        if hasattr(inputs, "to"):
+            inputs = inputs.to(model.device)
+        else:
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+        with torch.inference_mode():
+            output_ids = model.generate(**inputs, **generate_kwargs)
+
+        input_len = inputs["input_ids"].shape[1]
+        raw_texts: list[str] = processor.batch_decode(
+            output_ids[:, input_len:],
+            skip_special_tokens=True,
+        )
+        return [(parse_extraction_response(raw), raw) for raw in raw_texts]
+
+    if family == "gemma4":
+        # Gemma 4: batch text prompts and provide one image list per prompt.
+        text_prompts = [
+            processor.apply_chat_template(
+                build_messages(p, model_family=family),
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
             for p in image_paths
         ]
+        inputs = processor(
+            text=text_prompts,
+            images=[[img] for img in images],
+            return_tensors="pt",
+            padding=True,
+        )
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-    # SmolVLM / generic: build one prompt per image, batch-tokenise with padding
+        with torch.inference_mode():
+            output_ids = model.generate(**inputs, **generate_kwargs)
+
+        input_len = inputs["input_ids"].shape[1]
+        raw_texts: list[str] = processor.batch_decode(
+            output_ids[:, input_len:],
+            skip_special_tokens=True,
+        )
+        return [(parse_extraction_response(raw), raw) for raw in raw_texts]
+
+    # SmolVLM / generic: batch text prompts and pass one image per sample.
     text_prompts = [
         processor.apply_chat_template(
             build_messages(p, model_family=family),
@@ -889,9 +942,10 @@ def extract_grid_batch_with_model(
         )
         for p in image_paths
     ]
+    # For SmolVLM, images must be nested per prompt: [[img1], [img2], ...]
     inputs = processor(
         text=text_prompts,
-        images=images,
+        images=[[img] for img in images],
         return_tensors="pt",
         padding=True,
     )
@@ -900,16 +954,13 @@ def extract_grid_batch_with_model(
     with torch.inference_mode():
         output_ids = model.generate(**inputs, **generate_kwargs)
 
-    # Inputs are left-padded to a uniform length; strip that prefix from outputs
+    # Inputs are padded to a uniform length; strip that prefix from outputs.
     input_len = inputs["input_ids"].shape[1]
-    results: list[tuple[DailyRainfallGrid | None, str]] = []
-    for i in range(len(image_paths)):
-        raw_text: str = processor.decode(
-            output_ids[i, input_len:],
-            skip_special_tokens=True,
-        )
-        results.append((parse_extraction_response(raw_text), raw_text))
-    return results
+    raw_texts: list[str] = processor.batch_decode(
+        output_ids[:, input_len:],
+        skip_special_tokens=True,
+    )
+    return [(parse_extraction_response(raw), raw) for raw in raw_texts]
 
 
 def extract_grid(

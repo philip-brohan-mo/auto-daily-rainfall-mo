@@ -74,8 +74,9 @@ environment_variables:
   # Uncomment to process only N images per shard (useful for smoke tests).
   # EXTRACT_LIMIT: "5"
 
-  # Model to use.  "smolvlm" resolves to HuggingFaceTB/SmolVLM-500M-Instruct.
-  WEATHER_MODEL: smolvlm
+  # Model to use (required — must be set at submission time via aml_submit.sh --model).
+  # "smolvlm" resolves to HuggingFaceTB/SmolVLM-500M-Instruct.
+  WEATHER_MODEL: ""
 
   # HuggingFace token — required for gated models (Gemma 3/4, Llama, etc.).
   # Set HF_TOKEN in azureml/config.env; aml_submit.sh passes it at submission time.

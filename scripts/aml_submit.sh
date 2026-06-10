@@ -7,7 +7,7 @@
 #   CLI flags and environment variables override any value in config.env.
 #
 # ── Usage ─────────────────────────────────────────────────────────────────────
-#   bash scripts/aml_submit.sh {extract|evaluate|finetune|env} [options]
+#   bash scripts/aml_submit.sh {extract|evaluate|finetune|finetune-consensus|env} [options]
 #
 # ── Options ───────────────────────────────────────────────────────────────────
 #   --subscription SUB      Azure subscription ID or name
@@ -17,6 +17,9 @@
 #   --total-shards N        Parallel shards for extract/evaluate (default: 8)
 #   --limit N               Process only N images per shard (for smoke tests);
 #                           also defaults --total-shards to 1
+#   --batch-size N          Batch size per extraction job (default: 10)
+#   --retry-batch-size N    Stage-2 retry batch size for parse failures
+#                           (default: min(batch-size, 4))
 #   --model MODEL           Model preset (smolvlm, smolvlm2, granite, granite4) or HF ID
 #   --env-variant v100|a100 Azure ML environment to use (default: v100).
 #                           v100 uses weather-doc-extractor  (PyTorch 2.4, CUDA 12.1)
@@ -30,6 +33,9 @@
 #                             test_fake → test_data/fake  (committed test split)
 #   --images-path PATH      Override AML_IMAGES_PATH
 #   --transcriptions-path PATH  Override AML_TRANSCRIPTIONS_PATH
+#   --consensus-transcriptions-path PATH
+#                           Override consensus transcription path used by
+#                           finetune-consensus
 #   --checkpoint PATH       Use a saved fine-tuned checkpoint for extraction
 #                           (overrides --model); path relative to AML_DATASTORE_BASE
 #   --extraction-registry FILE
@@ -78,8 +84,9 @@ fi
 COMMAND=""
 TOTAL_SHARDS="${TOTAL_SHARDS:-1}"
 EXTRACT_LIMIT=""
-BATCH_SIZE="${BATCH_SIZE:-1}"
-WEATHER_MODEL="${WEATHER_MODEL:-smolvlm}"
+BATCH_SIZE="${BATCH_SIZE:-10}"
+RETRY_BATCH_SIZE="${RETRY_BATCH_SIZE:-}"
+WEATHER_MODEL="${WEATHER_MODEL:-}"
 WEATHER_CHECKPOINT=""
 EXTRACTION_REGISTRY_FILE="${EXTRACTION_REGISTRY_FILE:-outputs/extraction_registry.json}"
 MODEL_REGISTRY_FILE="${MODEL_REGISTRY_FILE:-outputs/model_registry.json}"
@@ -93,6 +100,7 @@ AML_WORKSPACE="${AML_WORKSPACE:-}"
 AML_DATASTORE_BASE="${AML_DATASTORE_BASE:-azureml://datastores/workspaceblobstore/paths}"
 AML_IMAGES_PATH="${AML_IMAGES_PATH:-Daily_rainfall_sample/images}"
 AML_TRANSCRIPTIONS_PATH="${AML_TRANSCRIPTIONS_PATH:-Daily_rainfall_sample/transcriptions}"
+AML_CONSENSUS_TRANSCRIPTIONS_PATH="${AML_CONSENSUS_TRANSCRIPTIONS_PATH:-$AML_TRANSCRIPTIONS_PATH}"
 AML_OUTPUTS_PATH="${AML_OUTPUTS_PATH:-outputs}"
 AML_HF_CACHE_PATH="${AML_HF_CACHE_PATH:-hf_cache}"
 
@@ -109,6 +117,7 @@ while [[ $# -gt 0 ]]; do
         --total-shards)      TOTAL_SHARDS="$2";         shift 2 ;;
         --limit)             EXTRACT_LIMIT="$2";        shift 2 ;;
         --batch-size)        BATCH_SIZE="$2";            shift 2 ;;
+        --retry-batch-size)  RETRY_BATCH_SIZE="$2";      shift 2 ;;
         --model)             WEATHER_MODEL="$2";        shift 2 ;;
         --compute)           AML_COMPUTE="$2";          shift 2 ;;
         --env-variant)       AML_ENV_VARIANT="$2";      shift 2 ;;
@@ -123,17 +132,19 @@ while [[ $# -gt 0 ]]; do
             shift 2 ;;
         --images-path)       AML_IMAGES_PATH="$2";       shift 2 ;;
         --transcriptions-path) AML_TRANSCRIPTIONS_PATH="$2"; shift 2 ;;
+        --consensus-transcriptions-path) AML_CONSENSUS_TRANSCRIPTIONS_PATH="$2"; shift 2 ;;
         --checkpoint)        WEATHER_CHECKPOINT="$2";    shift 2 ;;
         --extraction-registry) EXTRACTION_REGISTRY_FILE="$2"; shift 2 ;;
         --model-registry)    MODEL_REGISTRY_FILE="$2"; shift 2 ;;
         --clear-modules)     CLEAR_HF_MODULES="1";         shift ;;
         --help|-h)           usage 0 ;;
-        extract|evaluate|finetune|env) COMMAND="$1"; shift ;;
+        extract|evaluate|finetune|finetune-consensus|env) COMMAND="$1"; shift ;;
         *) echo "Unknown option: $1" >&2; usage 1 ;;
     esac
 done
 
-[[ -z "$COMMAND" ]] && { echo "Error: command required (extract|evaluate|finetune|env)" >&2; usage 1; }
+    [[ -z "$COMMAND" ]] && { echo "Error: command required (extract|evaluate|finetune|finetune-consensus|env)" >&2; usage 1; }
+[[ "$COMMAND" == "extract" && -z "$WEATHER_MODEL" && -z "$WEATHER_CHECKPOINT" ]] && { echo "Error: --model or --checkpoint required for extract" >&2; exit 1; }
 [[ -z "$AML_SUBSCRIPTION" ]]   && { echo "Error: AML_SUBSCRIPTION not set (use --subscription or azureml/config.env)"   >&2; exit 1; }
 [[ -z "$AML_RESOURCE_GROUP" ]] && { echo "Error: AML_RESOURCE_GROUP not set (use --resource-group or azureml/config.env)" >&2; exit 1; }
 [[ -z "$AML_WORKSPACE" ]]      && { echo "Error: AML_WORKSPACE not set (use --workspace or azureml/config.env)"           >&2; exit 1; }
@@ -168,9 +179,11 @@ if [[ -n "$WEATHER_CHECKPOINT" ]]; then
     CHECKPOINT_NAME="${WEATHER_CHECKPOINT##*/}"
     CHECKPOINT_URI="$AML_DATASTORE_BASE/$WEATHER_CHECKPOINT"
     MODEL_SLUG="$CHECKPOINT_NAME"
+    CHECKPOINT_REQUIRED="1"
 else
     CHECKPOINT_URI=""
     MODEL_SLUG="${WEATHER_MODEL##*/}"
+    CHECKPOINT_REQUIRED="0"
 fi
 RUN_TIMESTAMP="$(date -u +%Y%m%d-%H%M%S)"
 EXTRACTIONS_REL_PATH="$AML_OUTPUTS_PATH/extractions/$MODEL_SLUG/$RUN_TIMESTAMP"
@@ -195,6 +208,7 @@ CHECKPOINT_PATH="$CHECKPOINTS_REL_PATH/$TRAINING_MODEL_SLUG"
 # Resolved datastore URIs
 IMAGES_URI="$AML_DATASTORE_BASE/$AML_IMAGES_PATH"
 TRANSCRIPTIONS_URI="$AML_DATASTORE_BASE/$AML_TRANSCRIPTIONS_PATH"
+CONSENSUS_TRANSCRIPTIONS_URI="$AML_DATASTORE_BASE/$AML_CONSENSUS_TRANSCRIPTIONS_PATH"
 OUTPUTS_URI="$AML_DATASTORE_BASE/$AML_OUTPUTS_PATH"
 EXTRACTIONS_URI="$AML_DATASTORE_BASE/$EXTRACTIONS_REL_PATH"
 HF_CACHE_URI="$AML_DATASTORE_BASE/$AML_HF_CACHE_PATH"
@@ -253,7 +267,9 @@ case "$COMMAND" in
                 --set environment_variables.SHARD="$i" \
                 --set environment_variables.TOTAL_SHARDS="$TOTAL_SHARDS" \
                 --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
+                --set environment_variables.WEATHER_CHECKPOINT_REQUIRED="$CHECKPOINT_REQUIRED" \
                 --set environment_variables.BATCH_SIZE="$BATCH_SIZE" \
+                ${RETRY_BATCH_SIZE:+--set environment_variables.RETRY_BATCH_SIZE="$RETRY_BATCH_SIZE"} \
                 ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
                 --set environment_variables.CLEAR_HF_MODULES="$CLEAR_HF_MODULES" \
                 ${HF_TOKEN:+--set environment_variables.HF_TOKEN="$HF_TOKEN"} \
@@ -316,6 +332,7 @@ case "$COMMAND" in
             --set inputs.images_dir.path="$IMAGES_URI" \
             --set inputs.transcriptions_dir.path="$TRANSCRIPTIONS_URI" \
             --set outputs.checkpoints.path="$AML_DATASTORE_BASE/$CHECKPOINTS_REL_PATH" \
+            --set outputs.hf_cache.path="$AML_DATASTORE_BASE/$AML_HF_CACHE_PATH" \
             --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
             ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
             ${HF_TOKEN:+--set environment_variables.HF_TOKEN="$HF_TOKEN"} \
@@ -330,11 +347,63 @@ case "$COMMAND" in
             --registry-file "$MODEL_REGISTRY_FILE" \
             --job-id "$JOB_ID" \
             --status submitted \
+            --training-mode standard \
             --notes "Auto-registered on finetune submit"
 
         echo "Model registry: $MODEL_REGISTRY_FILE"
         echo
         echo "Checkpoint path for extraction (once job completes):"
         echo "  bash scripts/aml_submit.sh --checkpoint $CHECKPOINT_PATH extract"
+        ;;
+
+    finetune-consensus)
+        echo "Submitting consensus finetune job..."
+        CONSENSUS_CHECKPOINT_PATH="$WEATHER_CHECKPOINT"
+        if [[ -z "$CONSENSUS_CHECKPOINT_PATH" && "$WEATHER_MODEL" == *"/outputs/checkpoints/"* ]]; then
+            CONSENSUS_CHECKPOINT_PATH="$WEATHER_MODEL"
+        fi
+        if [[ -z "$CONSENSUS_CHECKPOINT_PATH" ]]; then
+            echo "Error: finetune-consensus requires a checkpoint path via --model <checkpoint-path> or --checkpoint <checkpoint-path>" >&2
+            exit 1
+        fi
+        CONSENSUS_CHECKPOINT_URI="$AML_DATASTORE_BASE/$CONSENSUS_CHECKPOINT_PATH"
+        CONSENSUS_CHECKPOINT_SLUG="${CONSENSUS_CHECKPOINT_PATH##*/}"
+        MODEL_SLUG="$CONSENSUS_CHECKPOINT_SLUG"
+        CHECKPOINT_RUN_SLUG="${MODEL_SLUG}-${RUN_TIMESTAMP}"
+        CHECKPOINTS_REL_PATH="$AML_OUTPUTS_PATH/checkpoints/$CHECKPOINT_RUN_SLUG"
+        CHECKPOINT_PATH="$CHECKPOINTS_REL_PATH/$MODEL_SLUG"
+        echo "  Checkpoint output: $AML_DATASTORE_BASE/$CHECKPOINTS_REL_PATH"
+        echo "  Input checkpoint: $CONSENSUS_CHECKPOINT_URI"
+        echo "  Consensus transcriptions: $CONSENSUS_TRANSCRIPTIONS_URI"
+        JOB_ID=$(az ml job create \
+            --file "$REPO_DIR/azureml/finetune_job.yml" \
+            "${AML_ARGS[@]}" \
+            --set compute="azureml:$AML_COMPUTE" \
+            ${AML_ENV_OVERRIDE:+$AML_ENV_OVERRIDE} \
+            --set inputs.images_dir.path="$IMAGES_URI" \
+            --set inputs.transcriptions_dir.path="$CONSENSUS_TRANSCRIPTIONS_URI" \
+            --set inputs.checkpoint_dir.path="$CONSENSUS_CHECKPOINT_URI" \
+            --set outputs.checkpoints.path="$AML_DATASTORE_BASE/$CHECKPOINTS_REL_PATH" \
+            --set outputs.hf_cache.path="$AML_DATASTORE_BASE/$AML_HF_CACHE_PATH" \
+            --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
+            --set environment_variables.WEATHER_FINETUNE_MODE="finetune-consensus" \
+            ${EXTRACT_LIMIT:+--set environment_variables.EXTRACT_LIMIT="$EXTRACT_LIMIT"} \
+            ${HF_TOKEN:+--set environment_variables.HF_TOKEN="$HF_TOKEN"} \
+            --set display_name="finetune-consensus-${MODEL_SLUG}" \
+            --query name --output tsv)
+        echo "Consensus finetune job submitted: $JOB_ID"
+
+        python3 "$REPO_DIR/scripts/create_model_registry_entry.py" \
+            --checkpoint-path "$CHECKPOINT_PATH" \
+            --base-model "$WEATHER_MODEL" \
+            --dataset "$AML_IMAGES_PATH" \
+            --registry-file "$MODEL_REGISTRY_FILE" \
+            --job-id "$JOB_ID" \
+            --status submitted \
+            --training-mode consensus-masked \
+            --consensus-transcriptions-path "$AML_CONSENSUS_TRANSCRIPTIONS_PATH" \
+            --notes "Consensus finetune submit"
+
+        echo "Model registry: $MODEL_REGISTRY_FILE"
         ;;
 esac

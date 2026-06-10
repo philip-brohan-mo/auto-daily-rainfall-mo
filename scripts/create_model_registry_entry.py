@@ -57,6 +57,17 @@ def main():
         choices=["submitted", "running", "completed", "failed"],
         help="Lifecycle status for this registry entry",
     )
+    parser.add_argument(
+        "--training-mode",
+        default="standard",
+        choices=["standard", "consensus-masked"],
+        help="Training mode used for this checkpoint",
+    )
+    parser.add_argument(
+        "--consensus-transcriptions-path",
+        default="",
+        help="Consensus transcription dataset path (if training_mode=consensus-masked)",
+    )
     args = parser.parse_args()
 
     # Parse checkpoint path to extract timestamp
@@ -71,6 +82,9 @@ def main():
         "dataset": args.dataset,
         "job_id": args.job_id,
         "status": args.status,
+        "training_mode": args.training_mode,
+        "consensus_masked": args.training_mode == "consensus-masked",
+        "consensus_transcriptions_path": args.consensus_transcriptions_path,
         "created_at": timestamp,
         "notes": args.notes,
     }
@@ -116,6 +130,9 @@ def main():
     if args.job_id:
         print(f"  Job ID: {args.job_id}")
     print(f"  Status: {args.status}")
+    print(f"  Training mode: {args.training_mode}")
+    if args.consensus_transcriptions_path:
+        print(f"  Consensus transcriptions: {args.consensus_transcriptions_path}")
 
 
 if __name__ == "__main__":

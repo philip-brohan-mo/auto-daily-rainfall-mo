@@ -23,6 +23,8 @@ from weather_doc_extractor.config import ModelConfig, TrainingConfig
 from weather_doc_extractor.inference import EXTRACTION_PROMPT, detect_model_family
 from weather_doc_extractor.schemas import DailyRainfallRecord
 
+_CONSENSUS_ROW_KEYS = [f"Day {i}" for i in range(1, 32)] + ["Totals"]
+
 # ---------------------------------------------------------------------------
 # Ground-truth serialisation
 # ---------------------------------------------------------------------------
@@ -37,6 +39,82 @@ def _ground_truth_json(record: DailyRainfallRecord) -> str:
     assert record.grid is not None, "record must have a paired grid"
     data = {**record.grid.days, "Totals": record.grid.totals}
     return json.dumps(data)
+
+
+def _coerce_consensus_value(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str) and raw.strip().lower() == "null":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _consensus_answer_and_char_mask(
+    consensus: dict[str, Any],
+) -> tuple[str, list[bool]]:
+    """Serialize consensus JSON to assistant text with structure-aware masking.
+
+    Loss is computed for:
+    - All structural elements (braces, brackets, commas, keys)
+    - Value characters from cells where ``correct=true``
+
+    Loss is NOT computed for:
+    - Values from cells where ``correct=false`` or ``correct`` is missing
+
+    This ensures the model learns both format structure and correct values.
+    """
+
+    parts: list[str] = []
+    char_mask: list[bool] = []
+
+    def _append(text: str, include_in_loss: bool) -> None:
+        parts.append(text)
+        char_mask.extend([include_in_loss] * len(text))
+
+    _append("{", True)
+
+    for row_idx, row_key in enumerate(_CONSENSUS_ROW_KEYS):
+        if row_idx > 0:
+            _append(",", True)
+
+        _append(json.dumps(row_key), True)
+        _append(":[", True)
+
+        row = consensus.get(row_key)
+        row_cells = row if isinstance(row, list) else []
+
+        for month_idx in range(12):
+            if month_idx > 0:
+                _append(",", True)
+
+            cell = (
+                row_cells[month_idx]
+                if month_idx < len(row_cells) and isinstance(row_cells[month_idx], dict)
+                else {}
+            )
+            value = _coerce_consensus_value(cell.get("value"))
+            value_text = json.dumps(value)
+            include_in_loss = bool(cell.get("correct", False))
+            _append(value_text, include_in_loss)
+
+        _append("]", True)
+
+    _append("}", True)
+    answer = "".join(parts)
+    return answer, char_mask
+
+
+def _load_consensus_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +200,67 @@ def build_training_examples(
     Records without a transcription (``grid is None``) are silently skipped.
     """
     return [build_training_example(r, family) for r in records if r.grid is not None]
+
+
+def build_consensus_training_example(
+    record: DailyRainfallRecord,
+    family: str,
+) -> dict[str, Any] | None:
+    """Build one strict-consensus training example.
+
+    Returns ``None`` when no valid consensus transcription exists.
+    """
+    if record.transcription_path is None:
+        return None
+
+    consensus = _load_consensus_json(record.transcription_path)
+    if consensus is None:
+        return None
+
+    answer, char_mask = _consensus_answer_and_char_mask(consensus)
+    if not any(char_mask):
+        return None
+
+    from PIL import Image as PILImage
+
+    pil_image = PILImage.open(record.image_path).convert("RGB")
+
+    if family != "smolvlm2":
+        raise ValueError(
+            "Consensus strict masking path currently supports SmolVLM2 only."
+        )
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image"},
+                {"type": "text", "text": EXTRACTION_PROMPT},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": answer}],
+        },
+    ]
+    return {
+        "image": pil_image,
+        "messages": messages,
+        "assistant_text": answer,
+        "assistant_char_mask": char_mask,
+    }
+
+
+def build_consensus_training_examples(
+    records: list[DailyRainfallRecord],
+    family: str,
+) -> list[dict[str, Any]]:
+    examples: list[dict[str, Any]] = []
+    for record in records:
+        ex = build_consensus_training_example(record, family)
+        if ex is not None:
+            examples.append(ex)
+    return examples
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +441,123 @@ def _make_collate_fn(processor: Any, family: str):
     return _dispatch.get(family, _collate_smolvlm)
 
 
+def _find_last_subsequence(haystack: list[int], needle: list[int]) -> int:
+    if not needle or len(needle) > len(haystack):
+        return -1
+    for idx in range(len(haystack) - len(needle), -1, -1):
+        if haystack[idx : idx + len(needle)] == needle:
+            return idx
+    return -1
+
+
+def _assistant_keep_flags(
+    tokenizer: Any,
+    assistant_text: str,
+    assistant_char_mask: list[bool],
+) -> tuple[list[int], list[bool]]:
+    if len(assistant_char_mask) != len(assistant_text):
+        raise ValueError("assistant_char_mask length must match assistant_text length")
+
+    encoded = tokenizer(
+        assistant_text,
+        add_special_tokens=False,
+        return_offsets_mapping=True,
+    )
+    token_ids = encoded["input_ids"]
+    offsets = encoded.get("offset_mapping")
+    if offsets is None:
+        raise ValueError(
+            "Tokenizer does not provide offset_mapping; strict consensus masking requires a fast tokenizer."
+        )
+
+    keep_flags: list[bool] = []
+    for start, end in offsets:
+        start_i = int(start)
+        end_i = int(end)
+        if end_i <= start_i:
+            keep_flags.append(False)
+            continue
+        keep_flags.append(any(assistant_char_mask[start_i:end_i]))
+    return token_ids, keep_flags
+
+
+def _make_consensus_smolvlm2_collate_fn(processor: Any):
+    """Strict consensus collator: loss only on correct=true value tokens."""
+
+    def _collate_consensus(examples: list[dict[str, Any]]) -> dict[str, Any]:
+        import torch
+
+        images = [ex["image"] for ex in examples]
+        texts = [
+            processor.apply_chat_template(
+                ex["messages"],
+                tokenize=False,
+                add_generation_prompt=False,
+            )
+            for ex in examples
+        ]
+        batch = processor(
+            text=texts,
+            images=images,
+            return_tensors="pt",
+            padding=True,
+        )
+
+        input_ids = batch["input_ids"]
+        labels = torch.full_like(input_ids, -100)
+
+        pad_id = processor.tokenizer.pad_token_id
+        n_total = input_ids.shape[1]
+
+        for row_idx, ex in enumerate(examples):
+            # Detect left-padding offset for this row.
+            row = input_ids[row_idx]
+            batch_offset = 0
+            if pad_id is not None and row[0].item() == pad_id:
+                for k in range(n_total):
+                    if row[k].item() != pad_id:
+                        batch_offset = k
+                        break
+
+            # Compute exact prompt length (including image tokens) by
+            # running the processor on the user-turn only.  This avoids the
+            # context-sensitive BPE mismatch that occurs when tokenising the
+            # assistant text in isolation for subsequence search.
+            prompt_text = processor.apply_chat_template(
+                [ex["messages"][0]],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            prompt_batch = processor(
+                text=[prompt_text],
+                images=[ex["image"]],
+                return_tensors="pt",
+            )
+            n_prompt = prompt_batch["input_ids"].shape[1]
+
+            assistant_start = batch_offset + n_prompt
+            if assistant_start >= n_total:
+                continue  # entire assistant response was truncated; skip row
+
+            _, keep_flags = _assistant_keep_flags(
+                processor.tokenizer,
+                ex["assistant_text"],
+                ex["assistant_char_mask"],
+            )
+
+            for offset, keep in enumerate(keep_flags):
+                pos = assistant_start + offset
+                if pos >= n_total:
+                    break  # truncated sequence; stop rather than OOB
+                if keep:
+                    labels[row_idx, pos] = input_ids[row_idx, pos]
+
+        batch["labels"] = labels
+        return batch
+
+    return _collate_consensus
+
+
 # ---------------------------------------------------------------------------
 # Main fine-tuning entry point
 # ---------------------------------------------------------------------------
@@ -415,7 +671,8 @@ def run_finetune(
     )
 
     # Output directory: one sub-directory per model so runs don't overwrite
-    model_slug = model_config.model_name.replace("/", "--")
+    # Use the base model name from adapter config, not the mount path
+    model_slug = base_model_name.replace("/", "--")
     output_dir = train_config.output_dir / model_slug
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -450,6 +707,178 @@ def run_finetune(
         processing_class=processor,
         peft_config=lora_cfg,
     )
+
+    trainer.train()
+    trainer.save_model(str(output_dir))
+
+    return output_dir
+
+
+def run_finetune_consensus(
+    records: list[DailyRainfallRecord],
+    model_config: ModelConfig,
+    train_config: TrainingConfig,
+) -> Path:
+    """Fine-tune SmolVLM2 checkpoint using strict consensus-token masking."""
+    try:
+        import torch
+        from peft import LoraConfig, PeftModel
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+        from trl import SFTConfig, SFTTrainer
+    except ImportError as exc:
+        raise ImportError(
+            "Install fine-tuning dependencies: pip install -e '.[train]'"
+        ) from exc
+
+    family = detect_model_family(model_config.model_name)
+    if family != "smolvlm2":
+        raise ValueError(
+            "Consensus fine-tune path currently supports SmolVLM2 checkpoints only."
+        )
+
+    transcribed = [r for r in records if r.transcription_path is not None]
+    if len(transcribed) < 2:
+        raise ValueError(
+            "Need at least two records with consensus transcription files for train/eval split."
+        )
+
+    n_eval = max(1, int(len(transcribed) * train_config.eval_split))
+    train_records = transcribed[:-n_eval]
+    eval_records = transcribed[-n_eval:]
+
+    train_examples = build_consensus_training_examples(train_records, family)
+    eval_examples = build_consensus_training_examples(eval_records, family)
+    if not train_examples:
+        raise ValueError(
+            "No valid consensus training examples with correct=true cells."
+        )
+    if not eval_examples:
+        raise ValueError(
+            "No valid consensus evaluation examples with correct=true cells."
+        )
+
+    # Reuse local HF cache path resolution from normal fine-tune path.
+    from weather_doc_extractor.inference import _local_hf_home, _resolve_model_path
+    import os
+    from pathlib import Path as _Path
+
+    original_hf_home = os.environ.get("HF_HOME")
+    local_cache = _local_hf_home()
+    if local_cache is not None:
+        os.environ["HF_HOME"] = str(local_cache)
+        try:
+            import huggingface_hub.constants as _hfc
+
+            _hfc.HF_HOME = str(local_cache)
+            _hfc.HUGGINGFACE_HUB_CACHE = str(local_cache / "hub")
+            _hfc.HF_HUB_CACHE = str(local_cache / "hub")
+        except Exception:
+            pass
+        if original_hf_home and _Path(original_hf_home) != local_cache:
+            os.environ["_ORIGINAL_HF_HOME"] = original_hf_home
+
+    hf_cache_dir: str | None = str(local_cache / "hub") if local_cache else None
+
+    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+
+    # Continue from existing LoRA checkpoint when adapter_config.json is present.
+    output_model_name = model_config.model_name
+    adapter_root = train_config.consensus_checkpoint_dir or Path(
+        model_config.model_name
+    )
+    adapter_cfg_path = Path(adapter_root) / "adapter_config.json"
+    if adapter_cfg_path.exists():
+        adapter_cfg = json.loads(adapter_cfg_path.read_text(encoding="utf-8"))
+        base_model_name = adapter_cfg["base_model_name_or_path"]
+        output_model_name = base_model_name
+        resolved_base = _resolve_model_path(base_model_name)
+
+        proc_kwargs: dict[str, Any] = {"trust_remote_code": True}
+        if hf_cache_dir:
+            proc_kwargs["cache_dir"] = hf_cache_dir
+        processor = AutoProcessor.from_pretrained(resolved_base, **proc_kwargs)
+
+        base_kwargs: dict[str, Any] = {
+            "torch_dtype": dtype,
+            "device_map": model_config.device,
+            "trust_remote_code": True,
+        }
+        if hf_cache_dir:
+            base_kwargs["cache_dir"] = hf_cache_dir
+        base_model = AutoModelForImageTextToText.from_pretrained(
+            resolved_base,
+            **base_kwargs,
+        )
+        model = PeftModel.from_pretrained(
+            base_model,
+            str(adapter_root),
+            is_trainable=True,
+        )
+        lora_cfg = None
+    else:
+        resolved_name = _resolve_model_path(model_config.model_name)
+
+        proc_kwargs = {"trust_remote_code": True}
+        if hf_cache_dir:
+            proc_kwargs["cache_dir"] = hf_cache_dir
+        processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
+
+        model_kwargs: dict[str, Any] = {
+            "torch_dtype": dtype,
+            "device_map": model_config.device,
+            "trust_remote_code": True,
+        }
+        if hf_cache_dir:
+            model_kwargs["cache_dir"] = hf_cache_dir
+        model = AutoModelForImageTextToText.from_pretrained(
+            resolved_name, **model_kwargs
+        )
+
+        target_modules = train_config.lora_target_modules or "all-linear"
+        lora_cfg = LoraConfig(
+            r=train_config.lora_r,
+            lora_alpha=train_config.lora_alpha,
+            lora_dropout=train_config.lora_dropout,
+            target_modules=target_modules,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+
+    model_slug = output_model_name.replace("/", "--")
+    output_dir = train_config.output_dir / model_slug
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sft_args = SFTConfig(
+        output_dir=str(output_dir),
+        num_train_epochs=train_config.epochs,
+        per_device_train_batch_size=train_config.batch_size,
+        per_device_eval_batch_size=train_config.batch_size,
+        gradient_accumulation_steps=train_config.gradient_accumulation_steps,
+        learning_rate=train_config.learning_rate,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        load_best_model_at_end=True,
+        remove_unused_columns=False,
+        dataset_text_field="",
+        dataset_kwargs={"skip_prepare_dataset": True},
+        logging_steps=10,
+        fp16=False,
+        bf16=torch.cuda.is_available() and dtype == torch.bfloat16,
+        report_to=train_config.report_to,
+    )
+
+    trainer_kwargs: dict[str, Any] = {
+        "model": model,
+        "args": sft_args,
+        "train_dataset": train_examples,
+        "eval_dataset": eval_examples,
+        "data_collator": _make_consensus_smolvlm2_collate_fn(processor),
+        "processing_class": processor,
+    }
+    if lora_cfg is not None:
+        trainer_kwargs["peft_config"] = lora_cfg
+
+    trainer = SFTTrainer(**trainer_kwargs)
 
     trainer.train()
     trainer.save_model(str(output_dir))
