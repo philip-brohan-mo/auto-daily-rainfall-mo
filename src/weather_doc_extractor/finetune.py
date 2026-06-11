@@ -1021,7 +1021,8 @@ def run_finetune_consensus(
         output_model_name = base_model_name
         resolved_base = _resolve_model_path(base_model_name)
 
-        proc_kwargs: dict[str, Any] = {"trust_remote_code": True}
+        load_family = detect_model_family(base_model_name)
+        proc_kwargs: dict[str, Any] = _remote_code_kwargs_for_family(load_family)
         if hf_cache_dir:
             proc_kwargs["cache_dir"] = hf_cache_dir
         processor = AutoProcessor.from_pretrained(resolved_base, **proc_kwargs)
@@ -1029,7 +1030,7 @@ def run_finetune_consensus(
         base_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
             "device_map": model_config.device,
-            "trust_remote_code": True,
+            **_remote_code_kwargs_for_family(load_family),
         }
         if hf_cache_dir:
             base_kwargs["cache_dir"] = hf_cache_dir
@@ -1046,7 +1047,7 @@ def run_finetune_consensus(
     else:
         resolved_name = _resolve_model_path(model_config.model_name)
 
-        proc_kwargs = {"trust_remote_code": True}
+        proc_kwargs = _remote_code_kwargs_for_family(family)
         if hf_cache_dir:
             proc_kwargs["cache_dir"] = hf_cache_dir
         processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
@@ -1054,7 +1055,7 @@ def run_finetune_consensus(
         model_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
             "device_map": model_config.device,
-            "trust_remote_code": True,
+            **_remote_code_kwargs_for_family(family),
         }
         if hf_cache_dir:
             model_kwargs["cache_dir"] = hf_cache_dir
