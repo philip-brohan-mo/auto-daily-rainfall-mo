@@ -218,7 +218,7 @@ def build_consensus_training_example(
         return None
 
     answer, char_mask = _consensus_answer_and_char_mask(consensus)
-    
+
     # Check if there's at least one correct cell (ignore structural tokens)
     has_correct_cell = any(
         consensus.get(row_key, [{}])[month_idx].get("correct", False)
@@ -235,21 +235,38 @@ def build_consensus_training_example(
 
     pil_image = PILImage.open(record.image_path).convert("RGB")
 
-    # Consensus training is now supported for all model families
-
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image"},
-                {"type": "text", "text": EXTRACTION_PROMPT},
-            ],
-        },
-        {
-            "role": "assistant",
-            "content": [{"type": "text", "text": answer}],
-        },
-    ]
+    if family.startswith("granite") or family == "gemma3":
+        # Granite/Gemma3 require embedded PIL image content for
+        # apply_chat_template(tokenize=True, return_dict=True) to emit
+        # vision tensors.
+        image_item: dict[str, Any] = {"type": "image", "image": pil_image}
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": [
+                    image_item,
+                    {"type": "text", "text": EXTRACTION_PROMPT},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": answer}],
+            },
+        ]
+    else:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": EXTRACTION_PROMPT},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": answer}],
+            },
+        ]
     return {
         "image": pil_image,
         "messages": messages,

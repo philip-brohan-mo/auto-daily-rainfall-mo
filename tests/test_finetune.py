@@ -283,6 +283,46 @@ class TestConsensusHelpers:
         needle = [2, 3]
         assert _find_last_subsequence(hay, needle) == 3
 
+    def test_consensus_training_example_granite_embeds_pil_image(self, tmp_path):
+        from PIL import Image as PILImage
+
+        record = _make_record(tmp_path)
+        consensus = {
+            "Day 1": [{"value": 0.12, "correct": True}] + [{"value": None, "correct": False}] * 11,
+            **{
+                f"Day {i}": [{"value": None, "correct": False}] * 12
+                for i in range(2, 32)
+            },
+            "Totals": [{"value": None, "correct": False}] * 12,
+        }
+        record.transcription_path.write_text(json.dumps(consensus), encoding="utf-8")
+
+        ex = build_consensus_training_example(record, "granite4")
+        assert ex is not None
+        user_content = ex["messages"][0]["content"]
+        img_item = next(c for c in user_content if c.get("type") == "image")
+        assert isinstance(img_item.get("image"), PILImage.Image)
+
+    def test_consensus_training_example_gemma3_embeds_pil_image(self, tmp_path):
+        from PIL import Image as PILImage
+
+        record = _make_record(tmp_path)
+        consensus = {
+            "Day 1": [{"value": 0.12, "correct": True}] + [{"value": None, "correct": False}] * 11,
+            **{
+                f"Day {i}": [{"value": None, "correct": False}] * 12
+                for i in range(2, 32)
+            },
+            "Totals": [{"value": None, "correct": False}] * 12,
+        }
+        record.transcription_path.write_text(json.dumps(consensus), encoding="utf-8")
+
+        ex = build_consensus_training_example(record, "gemma3")
+        assert ex is not None
+        user_content = ex["messages"][0]["content"]
+        img_item = next(c for c in user_content if c.get("type") == "image")
+        assert isinstance(img_item.get("image"), PILImage.Image)
+
 
 # ---------------------------------------------------------------------------
 # trust_remote_code behavior by model family
