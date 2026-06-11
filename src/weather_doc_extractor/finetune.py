@@ -218,17 +218,24 @@ def build_consensus_training_example(
         return None
 
     answer, char_mask = _consensus_answer_and_char_mask(consensus)
-    if not any(char_mask):
+    
+    # Check if there's at least one correct cell (ignore structural tokens)
+    has_correct_cell = any(
+        consensus.get(row_key, [{}])[month_idx].get("correct", False)
+        for row_key in _CONSENSUS_ROW_KEYS
+        for month_idx in range(12)
+        if isinstance(consensus.get(row_key), list)
+        and month_idx < len(consensus.get(row_key, []))
+        and isinstance(consensus.get(row_key, [])[month_idx], dict)
+    )
+    if not has_correct_cell:
         return None
 
     from PIL import Image as PILImage
 
     pil_image = PILImage.open(record.image_path).convert("RGB")
 
-    if family != "smolvlm2":
-        raise ValueError(
-            "Consensus strict masking path currently supports SmolVLM2 only."
-        )
+    # Consensus training is now supported for all model families
 
     messages = [
         {
@@ -481,12 +488,19 @@ def _assistant_keep_flags(
     return token_ids, keep_flags
 
 
-def _make_consensus_smolvlm2_collate_fn(processor: Any):
-    """Strict consensus collator: loss only on correct=true value tokens."""
+def _make_consensus_collate_fn(processor: Any, family: str):
+    """Return a consensus collate function for SFTTrainer compatible with *family*.
 
-    def _collate_consensus(examples: list[dict[str, Any]]) -> dict[str, Any]:
-        import torch
+    All collators apply strict token-level masking:
+    - Loss only on assistant tokens where consensus JSON has correct=true
+    - Loss on all structural elements (brackets, commas, keys)
+    - Preserves model-family-specific tokenization quirks.
+    """
+    import torch
+    from torch.nn.utils.rnn import pad_sequence
 
+    def _collate_consensus_smolvlm(examples: list[dict[str, Any]]) -> dict[str, Any]:
+        """SmolVLM consensus: tokenize=False then processor."""
         images = [ex["image"] for ex in examples]
         texts = [
             processor.apply_chat_template(
@@ -505,12 +519,10 @@ def _make_consensus_smolvlm2_collate_fn(processor: Any):
 
         input_ids = batch["input_ids"]
         labels = torch.full_like(input_ids, -100)
-
         pad_id = processor.tokenizer.pad_token_id
         n_total = input_ids.shape[1]
 
         for row_idx, ex in enumerate(examples):
-            # Detect left-padding offset for this row.
             row = input_ids[row_idx]
             batch_offset = 0
             if pad_id is not None and row[0].item() == pad_id:
@@ -519,10 +531,6 @@ def _make_consensus_smolvlm2_collate_fn(processor: Any):
                         batch_offset = k
                         break
 
-            # Compute exact prompt length (including image tokens) by
-            # running the processor on the user-turn only.  This avoids the
-            # context-sensitive BPE mismatch that occurs when tokenising the
-            # assistant text in isolation for subsequence search.
             prompt_text = processor.apply_chat_template(
                 [ex["messages"][0]],
                 tokenize=False,
@@ -537,7 +545,7 @@ def _make_consensus_smolvlm2_collate_fn(processor: Any):
 
             assistant_start = batch_offset + n_prompt
             if assistant_start >= n_total:
-                continue  # entire assistant response was truncated; skip row
+                continue
 
             _, keep_flags = _assistant_keep_flags(
                 processor.tokenizer,
@@ -548,14 +556,221 @@ def _make_consensus_smolvlm2_collate_fn(processor: Any):
             for offset, keep in enumerate(keep_flags):
                 pos = assistant_start + offset
                 if pos >= n_total:
-                    break  # truncated sequence; stop rather than OOB
+                    break
                 if keep:
                     labels[row_idx, pos] = input_ids[row_idx, pos]
 
         batch["labels"] = labels
         return batch
 
-    return _collate_consensus
+    def _collate_consensus_granite(examples: list[dict[str, Any]]) -> dict[str, Any]:
+        """Granite consensus: tokenize=True per-example, pad_sequence, preserve image_sizes."""
+        batches = [
+            processor.apply_chat_template(
+                ex["messages"],
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                add_generation_prompt=False,
+            )
+            for ex in examples
+        ]
+
+        pad_id = processor.tokenizer.pad_token_id or 0
+        input_ids = pad_sequence(
+            [b["input_ids"][0] for b in batches],
+            batch_first=True,
+            padding_value=pad_id,
+        )
+        attention_mask = pad_sequence(
+            [b["attention_mask"][0] for b in batches],
+            batch_first=True,
+            padding_value=0,
+        )
+        pixel_values = torch.cat([b["pixel_values"] for b in batches], dim=0)
+
+        batch = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "pixel_values": pixel_values,
+        }
+        if "image_sizes" in batches[0]:
+            image_sizes = torch.cat([b["image_sizes"] for b in batches], dim=0)
+            batch["image_sizes"] = image_sizes
+
+        labels = torch.full_like(input_ids, -100)
+        n_total = input_ids.shape[1]
+
+        for row_idx, ex in enumerate(examples):
+            # For tokenize=True, find assistant start by tokenizing user message only
+            user_msg_batch = processor.apply_chat_template(
+                [ex["messages"][0]],
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                add_generation_prompt=True,
+            )
+            n_prompt = user_msg_batch["input_ids"].shape[1]
+            assistant_start = n_prompt
+            if assistant_start >= n_total:
+                continue
+
+            _, keep_flags = _assistant_keep_flags(
+                processor.tokenizer,
+                ex["assistant_text"],
+                ex["assistant_char_mask"],
+            )
+
+            for offset, keep in enumerate(keep_flags):
+                pos = assistant_start + offset
+                if pos >= n_total:
+                    break
+                if keep:
+                    labels[row_idx, pos] = input_ids[row_idx, pos]
+
+        batch["labels"] = labels
+        return batch
+
+    def _collate_consensus_gemma3(examples: list[dict[str, Any]]) -> dict[str, Any]:
+        """Gemma 3 consensus: tokenize=True with do_pan_and_scan, preserve model quirks."""
+        batches = [
+            processor.apply_chat_template(
+                ex["messages"],
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                add_generation_prompt=False,
+                do_pan_and_scan=True,
+            )
+            for ex in examples
+        ]
+
+        pad_id = processor.tokenizer.pad_token_id or 0
+        input_ids = pad_sequence(
+            [b["input_ids"][0] for b in batches],
+            batch_first=True,
+            padding_value=pad_id,
+        )
+        attention_mask = pad_sequence(
+            [b["attention_mask"][0] for b in batches],
+            batch_first=True,
+            padding_value=0,
+        )
+        pixel_values = torch.cat([b["pixel_values"] for b in batches], dim=0)
+
+        batch = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "pixel_values": pixel_values,
+        }
+
+        labels = torch.full_like(input_ids, -100)
+        n_total = input_ids.shape[1]
+
+        for row_idx, ex in enumerate(examples):
+            user_msg_batch = processor.apply_chat_template(
+                [ex["messages"][0]],
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                add_generation_prompt=True,
+                do_pan_and_scan=True,
+            )
+            n_prompt = user_msg_batch["input_ids"].shape[1]
+            assistant_start = n_prompt
+            if assistant_start >= n_total:
+                continue
+
+            _, keep_flags = _assistant_keep_flags(
+                processor.tokenizer,
+                ex["assistant_text"],
+                ex["assistant_char_mask"],
+            )
+
+            for offset, keep in enumerate(keep_flags):
+                pos = assistant_start + offset
+                if pos >= n_total:
+                    break
+                if keep:
+                    labels[row_idx, pos] = input_ids[row_idx, pos]
+
+        batch["labels"] = labels
+        return batch
+
+    def _collate_consensus_gemma4(examples: list[dict[str, Any]]) -> dict[str, Any]:
+        """Gemma 4 consensus: tokenize=False with enable_thinking=False."""
+        images = [ex["image"] for ex in examples]
+        texts = [
+            processor.apply_chat_template(
+                ex["messages"],
+                tokenize=False,
+                add_generation_prompt=False,
+                enable_thinking=False,
+            )
+            for ex in examples
+        ]
+        batch = processor(
+            text=texts,
+            images=images,
+            return_tensors="pt",
+            padding=True,
+        )
+
+        input_ids = batch["input_ids"]
+        labels = torch.full_like(input_ids, -100)
+        pad_id = processor.tokenizer.pad_token_id
+        n_total = input_ids.shape[1]
+
+        for row_idx, ex in enumerate(examples):
+            row = input_ids[row_idx]
+            batch_offset = 0
+            if pad_id is not None and row[0].item() == pad_id:
+                for k in range(n_total):
+                    if row[k].item() != pad_id:
+                        batch_offset = k
+                        break
+
+            prompt_text = processor.apply_chat_template(
+                [ex["messages"][0]],
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+            prompt_batch = processor(
+                text=[prompt_text],
+                images=[ex["image"]],
+                return_tensors="pt",
+            )
+            n_prompt = prompt_batch["input_ids"].shape[1]
+
+            assistant_start = batch_offset + n_prompt
+            if assistant_start >= n_total:
+                continue
+
+            _, keep_flags = _assistant_keep_flags(
+                processor.tokenizer,
+                ex["assistant_text"],
+                ex["assistant_char_mask"],
+            )
+
+            for offset, keep in enumerate(keep_flags):
+                pos = assistant_start + offset
+                if pos >= n_total:
+                    break
+                if keep:
+                    labels[row_idx, pos] = input_ids[row_idx, pos]
+
+        batch["labels"] = labels
+        return batch
+
+    # Ministral uses the same logic as SmolVLM (tokenize=False)
+    _dispatch = {
+        "granite": _collate_consensus_granite,
+        "granite4": _collate_consensus_granite,
+        "gemma3": _collate_consensus_gemma3,
+        "gemma4": _collate_consensus_gemma4,
+    }
+    return _dispatch.get(family, _collate_consensus_smolvlm)
 
 
 # ---------------------------------------------------------------------------
@@ -719,7 +934,7 @@ def run_finetune_consensus(
     model_config: ModelConfig,
     train_config: TrainingConfig,
 ) -> Path:
-    """Fine-tune SmolVLM2 checkpoint using strict consensus-token masking."""
+    """Fine-tune any model checkpoint using strict consensus-token masking."""
     try:
         import torch
         from peft import LoraConfig, PeftModel
@@ -731,10 +946,6 @@ def run_finetune_consensus(
         ) from exc
 
     family = detect_model_family(model_config.model_name)
-    if family != "smolvlm2":
-        raise ValueError(
-            "Consensus fine-tune path currently supports SmolVLM2 checkpoints only."
-        )
 
     transcribed = [r for r in records if r.transcription_path is not None]
     if len(transcribed) < 2:
@@ -872,7 +1083,7 @@ def run_finetune_consensus(
         "args": sft_args,
         "train_dataset": train_examples,
         "eval_dataset": eval_examples,
-        "data_collator": _make_consensus_smolvlm2_collate_fn(processor),
+        "data_collator": _make_consensus_collate_fn(processor, family),
         "processing_class": processor,
     }
     if lora_cfg is not None:
