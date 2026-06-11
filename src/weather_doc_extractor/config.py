@@ -131,7 +131,7 @@ class TrainingConfig:
             else None
         )
     )
-    consensus_checkpoint_dir: Path | None = field(
+    checkpoint_dir: Path | None = field(
         default_factory=lambda: (
             _env_path("WEATHER_CHECKPOINT_DIR", "")
             if _env_str("WEATHER_CHECKPOINT_DIR", "")

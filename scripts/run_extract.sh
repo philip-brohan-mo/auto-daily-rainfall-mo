@@ -44,25 +44,25 @@ fi
 # specified but no adapter_config.json can be found — never fall back silently.
 MODEL=""
 CHECKPOINT_REQUIRED="${WEATHER_CHECKPOINT_REQUIRED:-0}"
-find_adapter_dir() {
+check_top_level_adapter() {
     local root="$1"
-    find "$root" -type f -name adapter_config.json 2>/dev/null | head -n1 | sed 's|/adapter_config.json$||'
+    if [[ -f "$root/adapter_config.json" ]]; then
+        echo "$root"
+    fi
 }
 if [[ -n "${WEATHER_CHECKPOINT:-}" ]] && [[ "$CHECKPOINT_REQUIRED" == "1" ]]; then
-    echo "[run_extract] Searching for adapter in checkpoint: $WEATHER_CHECKPOINT" >&2
-    echo "[run_extract] Contents (first 30 lines):" >&2
-    find "$WEATHER_CHECKPOINT" -maxdepth 3 -type f -o -type d 2>/dev/null | head -30 >&2 || echo "[run_extract] ERROR: checkpoint path does not exist or not readable" >&2
-    MODEL="$(find_adapter_dir "$WEATHER_CHECKPOINT")"
+    echo "[run_extract] Looking for top-level adapter in: $WEATHER_CHECKPOINT" >&2
+    MODEL="$(check_top_level_adapter "$WEATHER_CHECKPOINT")"
     if [[ -z "$MODEL" ]]; then
-        echo "[run_extract] ERROR: WEATHER_CHECKPOINT is set but no adapter_config.json found at $WEATHER_CHECKPOINT (recursive search)." >&2
+        echo "[run_extract] ERROR: no adapter_config.json at top level of $WEATHER_CHECKPOINT." >&2
         exit 1
     fi
     echo "[run_extract] Using checkpoint: $MODEL" >&2
 elif [[ -n "${WEATHER_CHECKPOINT:-}" ]] && [[ "$CHECKPOINT_REQUIRED" != "1" ]]; then
     echo "[run_extract] Ignoring checkpoint input mount (not explicitly requested)." >&2
-    MODEL="$(find_adapter_dir "$WEATHER_CHECKPOINT")"
+    MODEL="$(check_top_level_adapter "$WEATHER_CHECKPOINT")"
     if [[ -n "$MODEL" ]]; then
-        echo "[run_extract] Found adapter in checkpoint mount; using: $MODEL" >&2
+        echo "[run_extract] Found top-level adapter in checkpoint mount; using: $MODEL" >&2
     fi
 elif [[ -n "${WEATHER_MODEL:-}" ]]; then
     MODEL="$WEATHER_MODEL"

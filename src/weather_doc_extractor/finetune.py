@@ -818,7 +818,7 @@ def run_finetune(
     """
     try:
         import torch
-        from peft import LoraConfig
+        from peft import LoraConfig, PeftModel
         from transformers import (
             AutoModelForCausalLM,
             AutoModelForImageTextToText,
@@ -873,38 +873,69 @@ def run_finetune(
             os.environ["_ORIGINAL_HF_HOME"] = original_hf_home
 
     hf_cache_dir: str | None = str(local_cache / "hub") if local_cache else None
-    resolved_name = _resolve_model_path(model_config.model_name)
-
-    # Load processor and model
-    proc_kwargs: dict[str, Any] = _remote_code_kwargs_for_family(family)
-    if hf_cache_dir:
-        proc_kwargs["cache_dir"] = hf_cache_dir
-    processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
-    model_kwargs: dict[str, Any] = {
-        "torch_dtype": dtype,
-        "device_map": model_config.device,
-        **_remote_code_kwargs_for_family(family),
-    }
-    if hf_cache_dir:
-        model_kwargs["cache_dir"] = hf_cache_dir
-    model = model_cls.from_pretrained(resolved_name, **model_kwargs)
 
-    # LoRA configuration
-    target_modules = train_config.lora_target_modules or "all-linear"
-    lora_cfg = LoraConfig(
-        r=train_config.lora_r,
-        lora_alpha=train_config.lora_alpha,
-        lora_dropout=train_config.lora_dropout,
-        target_modules=target_modules,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
+    # Resume from an existing LoRA checkpoint when adapter_config.json is present.
+    output_model_name = model_config.model_name
+    adapter_root = train_config.checkpoint_dir
+    adapter_cfg_path = Path(adapter_root) / "adapter_config.json" if adapter_root else None
+    if adapter_cfg_path is not None and adapter_cfg_path.exists():
+        adapter_cfg = json.loads(adapter_cfg_path.read_text(encoding="utf-8"))
+        base_model_name = adapter_cfg["base_model_name_or_path"]
+        output_model_name = base_model_name
+        resolved_base = _resolve_model_path(base_model_name)
 
-    # Output directory: one sub-directory per model so runs don't overwrite
-    # Use the base model name from adapter config, not the mount path
-    model_slug = base_model_name.replace("/", "--")
+        proc_kwargs: dict[str, Any] = _remote_code_kwargs_for_family(family)
+        if hf_cache_dir:
+            proc_kwargs["cache_dir"] = hf_cache_dir
+        processor = AutoProcessor.from_pretrained(resolved_base, **proc_kwargs)
+
+        base_kwargs: dict[str, Any] = {
+            "torch_dtype": dtype,
+            "device_map": model_config.device,
+            **_remote_code_kwargs_for_family(family),
+        }
+        if hf_cache_dir:
+            base_kwargs["cache_dir"] = hf_cache_dir
+        base_model = model_cls.from_pretrained(resolved_base, **base_kwargs)
+        model = PeftModel.from_pretrained(
+            base_model,
+            str(adapter_root),
+            is_trainable=True,
+        )
+        lora_cfg = None
+    else:
+        resolved_name = _resolve_model_path(model_config.model_name)
+
+        # Load processor and model
+        proc_kwargs = _remote_code_kwargs_for_family(family)
+        if hf_cache_dir:
+            proc_kwargs["cache_dir"] = hf_cache_dir
+        processor = AutoProcessor.from_pretrained(resolved_name, **proc_kwargs)
+
+        model_kwargs: dict[str, Any] = {
+            "torch_dtype": dtype,
+            "device_map": model_config.device,
+            **_remote_code_kwargs_for_family(family),
+        }
+        if hf_cache_dir:
+            model_kwargs["cache_dir"] = hf_cache_dir
+        model = model_cls.from_pretrained(resolved_name, **model_kwargs)
+
+        # LoRA configuration
+        target_modules = train_config.lora_target_modules or "all-linear"
+        lora_cfg = LoraConfig(
+            r=train_config.lora_r,
+            lora_alpha=train_config.lora_alpha,
+            lora_dropout=train_config.lora_dropout,
+            target_modules=target_modules,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        output_model_name = model_config.model_name
+
+    model_slug = output_model_name.replace("/", "--")
     output_dir = train_config.output_dir / model_slug
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -930,15 +961,18 @@ def run_finetune(
 
     collate_fn = _make_collate_fn(processor, family)
 
-    trainer = SFTTrainer(
-        model=model,
-        args=sft_args,
-        train_dataset=train_examples,
-        eval_dataset=eval_examples,
-        data_collator=collate_fn,
-        processing_class=processor,
-        peft_config=lora_cfg,
-    )
+    trainer_kwargs: dict[str, Any] = {
+        "model": model,
+        "args": sft_args,
+        "train_dataset": train_examples,
+        "eval_dataset": eval_examples,
+        "data_collator": collate_fn,
+        "processing_class": processor,
+    }
+    if lora_cfg is not None:
+        trainer_kwargs["peft_config"] = lora_cfg
+
+    trainer = SFTTrainer(**trainer_kwargs)
 
     trainer.train()
     trainer.save_model(str(output_dir))
@@ -1011,7 +1045,7 @@ def run_finetune_consensus(
 
     # Continue from existing LoRA checkpoint when adapter_config.json is present.
     output_model_name = model_config.model_name
-    adapter_root = train_config.consensus_checkpoint_dir or Path(
+    adapter_root = train_config.checkpoint_dir or Path(
         model_config.model_name
     )
     adapter_cfg_path = Path(adapter_root) / "adapter_config.json"

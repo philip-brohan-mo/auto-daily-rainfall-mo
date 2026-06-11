@@ -323,7 +323,15 @@ case "$COMMAND" in
 
     finetune)
         echo "Submitting finetune job..."
+        if [[ -n "$WEATHER_CHECKPOINT" ]]; then
+            FINETUNE_CHECKPOINT_URI="$AML_DATASTORE_BASE/$WEATHER_CHECKPOINT"
+            FINETUNE_CHECKPOINT_SLUG="${WEATHER_CHECKPOINT##*/}"
+            CHECKPOINT_RUN_SLUG="${FINETUNE_CHECKPOINT_SLUG}-${RUN_TIMESTAMP}"
+            CHECKPOINTS_REL_PATH="$AML_OUTPUTS_PATH/checkpoints/$CHECKPOINT_RUN_SLUG"
+            CHECKPOINT_PATH="$CHECKPOINTS_REL_PATH/$FINETUNE_CHECKPOINT_SLUG"
+        fi
         echo "  Checkpoint output: $AML_DATASTORE_BASE/$CHECKPOINTS_REL_PATH"
+        [[ -n "$WEATHER_CHECKPOINT" ]] && echo "  Input checkpoint: $FINETUNE_CHECKPOINT_URI"
         JOB_ID=$(az ml job create \
             --file "$REPO_DIR/azureml/finetune_job.yml" \
             "${AML_ARGS[@]}" \
@@ -331,6 +339,7 @@ case "$COMMAND" in
             ${AML_ENV_OVERRIDE:+$AML_ENV_OVERRIDE} \
             --set inputs.images_dir.path="$IMAGES_URI" \
             --set inputs.transcriptions_dir.path="$TRANSCRIPTIONS_URI" \
+            ${WEATHER_CHECKPOINT:+--set inputs.checkpoint_dir.path="$FINETUNE_CHECKPOINT_URI"} \
             --set outputs.checkpoints.path="$AML_DATASTORE_BASE/$CHECKPOINTS_REL_PATH" \
             --set outputs.hf_cache.path="$AML_DATASTORE_BASE/$AML_HF_CACHE_PATH" \
             --set environment_variables.WEATHER_MODEL="$WEATHER_MODEL" \
