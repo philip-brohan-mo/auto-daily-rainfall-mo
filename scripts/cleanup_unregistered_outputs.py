@@ -118,6 +118,13 @@ def _discover_local_suffixes(local_outputs_dir: Path, kind: str) -> set[str]:
     for first in base.iterdir():
         if not first.is_dir():
             continue
+        second_level_dirs = [p for p in first.iterdir() if p.is_dir()]
+        if not second_level_dirs:
+            # One-level layout, e.g. outputs/extractions/<run_name>
+            suffixes.add(first.name)
+            continue
+
+        # Two-level layout, e.g. outputs/extractions/<model>/<run>
         for second in first.iterdir():
             if second.is_dir():
                 suffixes.add(f"{first.name}/{second.name}")
