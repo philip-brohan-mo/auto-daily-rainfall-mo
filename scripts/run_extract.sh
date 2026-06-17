@@ -63,6 +63,9 @@ elif [[ -n "${WEATHER_CHECKPOINT:-}" ]] && [[ "$CHECKPOINT_REQUIRED" != "1" ]]; 
     MODEL="$(check_top_level_adapter "$WEATHER_CHECKPOINT")"
     if [[ -n "$MODEL" ]]; then
         echo "[run_extract] Found top-level adapter in checkpoint mount; using: $MODEL" >&2
+    elif [[ -n "${WEATHER_MODEL:-}" ]]; then
+        MODEL="$WEATHER_MODEL"
+        echo "[run_extract] No adapter found in checkpoint mount; falling back to WEATHER_MODEL: $MODEL" >&2
     fi
 elif [[ -n "${WEATHER_MODEL:-}" ]]; then
     MODEL="$WEATHER_MODEL"
@@ -70,16 +73,31 @@ else
     echo "[run_extract] ERROR: neither WEATHER_CHECKPOINT nor WEATHER_MODEL is set — refusing to use a default model." >&2
     exit 1
 fi
-MODEL_FLAG="--model $MODEL"
+
+if [[ -z "$MODEL" ]]; then
+    echo "[run_extract] ERROR: resolved model is empty; refusing to continue." >&2
+    exit 1
+fi
 
 echo "[run_extract] shard=$SHARD/$TOTAL_SHARDS images=$WEATHER_IMAGES_DIR output=$OUTPUT_DIR model=$MODEL ${LIMIT_FLAG:+limit=$EXTRACT_LIMIT} ${BATCH_SIZE_FLAG:+batch=$BATCH_SIZE} ${RETRY_BATCH_SIZE_FLAG:+retry_batch=$RETRY_BATCH_SIZE}"
 python -c "import torch, transformers; print(f'[env] torch={torch.__version__} transformers={transformers.__version__} cuda={torch.version.cuda}')"
 
-python -m weather_doc_extractor.cli batch-extract \
-    --shard "$SHARD" \
-    --total-shards "$TOTAL_SHARDS" \
-    --output-dir "$OUTPUT_DIR" \
-    $MODEL_FLAG \
-    $LIMIT_FLAG \
-    $BATCH_SIZE_FLAG \
-    $RETRY_BATCH_SIZE_FLAG
+cmd=(
+    python -m weather_doc_extractor.cli batch-extract
+    --shard "$SHARD"
+    --total-shards "$TOTAL_SHARDS"
+    --output-dir "$OUTPUT_DIR"
+    --model "$MODEL"
+)
+
+if [[ -n "${EXTRACT_LIMIT:-}" ]]; then
+    cmd+=(--limit "$EXTRACT_LIMIT")
+fi
+if [[ -n "${BATCH_SIZE:-}" ]]; then
+    cmd+=(--batch-size "$BATCH_SIZE")
+fi
+if [[ -n "${RETRY_BATCH_SIZE:-}" ]]; then
+    cmd+=(--retry-batch-size "$RETRY_BATCH_SIZE")
+fi
+
+"${cmd[@]}"

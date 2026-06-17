@@ -31,6 +31,14 @@ def parse_args() -> argparse.Namespace:
         help="Dataset root containing images/ and transcriptions/",
     )
     parser.add_argument(
+        "--variant-name",
+        type=str,
+        default=None,
+        help="Name for this consensus variant (e.g., 'consensus_1000', 'consensus_1000_v2'). "
+        "If omitted, defaults to 'consensus_<count>' extracted from dataset-root name. "
+        "Transcriptions will be created in {dataset-root}/{variant-name}/transcriptions/",
+    )
+    parser.add_argument(
         "--overwrite-placeholders",
         action="store_true",
         help="Rewrite existing placeholder transcriptions",
@@ -42,7 +50,6 @@ def main() -> None:
     args = parse_args()
     dataset_root = args.dataset_root.resolve()
     images_dir = dataset_root / "images"
-    transcriptions_dir = dataset_root / "transcriptions"
     manifest = args.manifest_csv.resolve()
 
     if not manifest.exists():
@@ -50,7 +57,27 @@ def main() -> None:
     if not images_dir.exists():
         raise SystemExit(f"Images directory not found: {images_dir}")
 
+    # Determine variant name: use explicit --variant-name or derive from dataset-root
+    explicit_variant_name = args.variant_name is not None
+    if args.variant_name:
+        variant_name = args.variant_name
+    else:
+        # Try to extract count from dataset-root name (e.g., "consensus_dataset_1000" -> "consensus_1000")
+        dataset_name = dataset_root.name
+        if "consensus_dataset_" in dataset_name:
+            count = dataset_name.split("consensus_dataset_")[-1]
+            variant_name = f"consensus_{count}"
+        else:
+            variant_name = "consensus"
+
+    # Create variant subdirectory for transcriptions
+    variant_dir = dataset_root / variant_name
+    transcriptions_dir = variant_dir / "transcriptions"
     transcriptions_dir.mkdir(parents=True, exist_ok=True)
+
+    # For backwards compatibility: also create/symlink to old path when using auto-derived variant name
+    old_transcriptions_dir = dataset_root / "transcriptions"
+    use_compat_mode = not explicit_variant_name
 
     created = 0
     skipped = 0
@@ -64,17 +91,31 @@ def main() -> None:
             out_file = transcriptions_dir / f"{stem}.json"
             if out_file.exists() and not args.overwrite_placeholders:
                 skipped += 1
-                continue
+            else:
+                # Placeholder structure compatible with existing grid parser.
+                payload = {f"Day {i}": [None] * 12 for i in range(1, 32)}
+                payload["Totals"] = [None] * 12
+                out_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                created += 1
 
-            # Placeholder structure compatible with existing grid parser.
-            payload = {f"Day {i}": [None] * 12 for i in range(1, 32)}
-            payload["Totals"] = [None] * 12
-            out_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            created += 1
+            # For backwards compatibility: also write to old path if using auto-derived variant
+            if use_compat_mode:
+                old_transcriptions_dir.mkdir(parents=True, exist_ok=True)
+                old_out_file = old_transcriptions_dir / f"{stem}.json"
+                if not old_out_file.exists() or args.overwrite_placeholders:
+                    payload = {f"Day {i}": [None] * 12 for i in range(1, 32)}
+                    payload["Totals"] = [None] * 12
+                    old_out_file.write_text(
+                        json.dumps(payload, indent=2), encoding="utf-8"
+                    )
 
     print(f"Dataset root: {dataset_root}")
     print(f"Images dir: {images_dir}")
+    print(f"Variant name: {variant_name}")
+    print(f"Variant dir: {variant_dir}")
     print(f"Transcriptions dir: {transcriptions_dir}")
+    if use_compat_mode:
+        print(f"Compat mode: also created {old_transcriptions_dir}")
     print(f"Placeholders created: {created}")
     print(f"Placeholders skipped: {skipped}")
 

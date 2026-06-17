@@ -38,6 +38,18 @@ When dependencies or model support change:
 2. Re-register environments if needed.
 3. Keep local environment.yml aligned where applicable.
 
+## MANDATORY: Script Execution Environment
+
+**ALL scripts (Python, shell, notebooks) must be executed in the weather-doc-extractor conda environment.**
+
+- Activate: `conda activate weather-doc-extractor`
+- Do not run scripts with system Python or other environments
+- Do not suggest or create workarounds that bypass the environment
+- If creating new scripts, always include environment setup instructions in docstrings/comments
+- When documenting CLI commands, always prefix with environment activation
+
+This is non-negotiable to maintain reproducibility and dependency isolation.
+
 # Required Workflow Scripts
 
 Prefer repository scripts over ad hoc commands:
@@ -99,6 +111,37 @@ If you change CLI behavior, model presets, checkpoint handling, or Azure submiss
 1. Update README/docs.
 2. Keep command examples accurate.
 3. Keep docs aligned with current Azure workflow.
+
+# New Script and Feature Implementation
+
+When creating new scripts or implementing new features:
+
+1. **Always include environment activation** in script docstrings, comments, or shell script headers
+2. **Document environment requirements** explicitly (e.g., "ENVIRONMENT: Run in weather-doc-extractor conda environment")
+3. **Add examples** showing correct environment activation in docstrings and help text
+4. **Write tests** that run in the proper environment
+5. **Update this instructions file** if the new feature needs special environment handling
+6. **Do not create scripts that run outside the weather-doc-extractor environment**
+
+Example for new Python scripts:
+```python
+#!/usr/bin/env python3
+"""Script description.
+
+ENVIRONMENT: Run this script in the weather-doc-extractor conda environment:
+  conda activate weather-doc-extractor
+  python scripts/my_script.py [options]
+"""
+```
+
+Example for new shell scripts:
+```bash
+#!/bin/bash
+# ENVIRONMENT: Run in weather-doc-extractor conda environment
+#   conda activate weather-doc-extractor
+
+# Rest of script...
+```
 
 # General Guidance
 

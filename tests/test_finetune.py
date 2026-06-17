@@ -288,7 +288,8 @@ class TestConsensusHelpers:
 
         record = _make_record(tmp_path)
         consensus = {
-            "Day 1": [{"value": 0.12, "correct": True}] + [{"value": None, "correct": False}] * 11,
+            "Day 1": [{"value": 0.12, "correct": True}]
+            + [{"value": None, "correct": False}] * 11,
             **{
                 f"Day {i}": [{"value": None, "correct": False}] * 12
                 for i in range(2, 32)
@@ -308,7 +309,8 @@ class TestConsensusHelpers:
 
         record = _make_record(tmp_path)
         consensus = {
-            "Day 1": [{"value": 0.12, "correct": True}] + [{"value": None, "correct": False}] * 11,
+            "Day 1": [{"value": 0.12, "correct": True}]
+            + [{"value": None, "correct": False}] * 11,
             **{
                 f"Day {i}": [{"value": None, "correct": False}] * 12
                 for i in range(2, 32)

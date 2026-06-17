@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Build consensus transcriptions (Option A format) from 5 extraction directories.
+"""Build consensus transcriptions (Option A format) from extraction directories.
 
 Each output cell is:
   {"value": <float|null>, "correct": <bool>}
 
-A cell is marked correct when at least `--agreement-threshold` models produce the
-same normalized value.
+A cell is marked correct when either:
+- at least `--agreement-threshold` models produce the same non-null value, or
+- at least `--null-threshold` models produce null.
+
+If both thresholds are satisfied, the non-null consensus takes precedence.
 """
 
 from __future__ import annotations
@@ -91,43 +94,124 @@ def _collect_stems(input_dirs: list[Path]) -> set[str]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build consensus transcriptions")
     parser.add_argument(
+        "--config-file",
+        type=Path,
+        default=None,
+        help="Path to consensus_config.json (reads extraction_dirs, threshold, precision from config)",
+    )
+    parser.add_argument(
         "--input-dir",
         action="append",
         dest="input_dirs",
-        required=True,
-        help="Model extraction directory (repeat 5 times)",
+        default=None,
+        help="Model extraction directory (repeat 5 times). Required if --config-file not provided.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        required=True,
-        help="Output directory for consensus transcription JSON files",
+        default=None,
+        help="Output directory for consensus transcription JSON files. "
+        "If --config-file provided and --output-dir omitted, writes to {config-dir}/consensus_transcriptions/",
     )
     parser.add_argument(
         "--agreement-threshold",
         type=int,
-        default=2,
-        help="Minimum agreeing models to mark correct=true (default: 2)",
+        default=None,
+        help="Minimum agreeing models to mark correct=true. "
+        "If --config-file provided, defaults to config value; otherwise default is 2.",
+    )
+    parser.add_argument(
+        "--null-threshold",
+        type=int,
+        default=None,
+        help="Minimum agreeing models to mark correct=true when consensus value is null. "
+        "Defaults to agreement threshold.",
     )
     parser.add_argument(
         "--precision",
         type=int,
-        default=3,
-        help="Decimal precision for value normalization before voting",
+        default=None,
+        help="Decimal precision for value normalization before voting. "
+        "If --config-file provided, defaults to config value; otherwise default is 3.",
     )
     parser.add_argument(
         "--summary-file",
         type=Path,
         default=None,
-        help="Optional path to write summary JSON",
+        help="Optional path to write summary JSON. "
+        "If --config-file provided and --summary-file omitted, writes to {config-dir}/consensus_summary.json",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    input_dirs = [Path(p).resolve() for p in args.input_dirs]
-    output_dir = args.output_dir.resolve()
+
+    # Load config if provided
+    config_data = None
+    if args.config_file is not None:
+        config_file = args.config_file.resolve()
+        if not config_file.exists():
+            raise SystemExit(f"Config file not found: {config_file}")
+        try:
+            config_data = json.loads(config_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise SystemExit(f"Failed to parse config file: {config_file}: {e}")
+
+    # Resolve input directories: from config or CLI
+    if config_data is not None:
+        input_dirs = [Path(d).resolve() for d in config_data.get("extraction_dirs", [])]
+    elif args.input_dirs is not None:
+        input_dirs = [Path(p).resolve() for p in args.input_dirs]
+    else:
+        raise SystemExit(
+            "Must provide either --config-file or --input-dir (repeat 5 times)"
+        )
+
+    # Resolve output directory
+    if args.output_dir is not None:
+        output_dir = args.output_dir.resolve()
+    elif config_data is not None:
+        config_dir = args.config_file.resolve().parent
+        output_dir = config_dir / "consensus_transcriptions"
+    else:
+        raise SystemExit("Must provide --output-dir or use --config-file")
+
+    # Resolve agreement threshold
+    threshold = args.agreement_threshold
+    if threshold is None:
+        if config_data is not None:
+            threshold = config_data.get("agreement_threshold", 2)
+        else:
+            threshold = 2
+
+    # Resolve null threshold
+    null_threshold = args.null_threshold
+    if null_threshold is None:
+        if config_data is not None:
+            null_threshold = config_data.get("null_threshold", threshold)
+        else:
+            null_threshold = threshold
+
+    if threshold < 1:
+        raise SystemExit("--agreement-threshold must be >= 1")
+    if null_threshold < 1:
+        raise SystemExit("--null-threshold must be >= 1")
+
+    # Resolve precision
+    precision = args.precision
+    if precision is None:
+        if config_data is not None:
+            precision = config_data.get("precision", 3)
+        else:
+            precision = 3
+
+    # Resolve summary file
+    summary_file = args.summary_file
+    if summary_file is None and config_data is not None:
+        config_dir = args.config_file.resolve().parent
+        summary_file = config_dir / "consensus_summary.json"
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for d in input_dirs:
@@ -146,8 +230,9 @@ def main() -> None:
         "missing_model_files": 0,
         "parse_failed_or_invalid": 0,
         "input_dirs": [str(d) for d in input_dirs],
-        "agreement_threshold": args.agreement_threshold,
-        "precision": args.precision,
+        "agreement_threshold": threshold,
+        "null_threshold": null_threshold,
+        "precision": precision,
     }
 
     for stem in stems:
@@ -174,19 +259,45 @@ def main() -> None:
                     row = _get_row(grid, key)
                     if not isinstance(row, list) or len(row) <= month_idx:
                         continue
-                    votes.append(_normalize_value(row[month_idx], args.precision))
+                    votes.append(_normalize_value(row[month_idx], precision))
 
                 if not votes:
                     chosen = None
-                    top_count = 0
+                    is_correct = False
                 else:
                     counts = Counter(votes)
-                    top_count = max(counts.values())
-                    # Deterministic tie-break: first value in encounter order among top counts.
-                    top_values = {v for v, c in counts.items() if c == top_count}
-                    chosen = next(v for v in votes if v in top_values)
+                    null_count = counts.get(None, 0)
 
-                is_correct = top_count >= args.agreement_threshold
+                    non_null_counts = {v: c for v, c in counts.items() if v is not None}
+                    if non_null_counts:
+                        best_non_null_count = max(non_null_counts.values())
+                        best_non_null_values = {
+                            v
+                            for v, c in non_null_counts.items()
+                            if c == best_non_null_count
+                        }
+                        # Deterministic tie-break: first non-null value in encounter order.
+                        best_non_null_value = next(
+                            v
+                            for v in votes
+                            if v is not None and v in best_non_null_values
+                        )
+                    else:
+                        best_non_null_count = 0
+                        best_non_null_value = None
+
+                    if best_non_null_count >= threshold:
+                        chosen = best_non_null_value
+                        is_correct = True
+                    elif null_count >= null_threshold:
+                        chosen = None
+                        is_correct = True
+                    else:
+                        top_count = max(counts.values())
+                        top_values = {v for v, c in counts.items() if c == top_count}
+                        chosen = next(v for v in votes if v in top_values)
+                        is_correct = False
+
                 consensus[key][month_idx] = {"value": chosen, "correct": is_correct}
 
                 stats["total_cells"] += 1
@@ -204,9 +315,9 @@ def main() -> None:
     stats["agreement_coverage"] = round(coverage, 6)
 
     print(json.dumps(stats, indent=2), flush=True)
-    if args.summary_file is not None:
-        args.summary_file.parent.mkdir(parents=True, exist_ok=True)
-        args.summary_file.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+    if summary_file is not None:
+        summary_file.parent.mkdir(parents=True, exist_ok=True)
+        summary_file.write_text(json.dumps(stats, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

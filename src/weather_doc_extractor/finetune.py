@@ -879,7 +879,9 @@ def run_finetune(
     # Resume from an existing LoRA checkpoint when adapter_config.json is present.
     output_model_name = model_config.model_name
     adapter_root = train_config.checkpoint_dir
-    adapter_cfg_path = Path(adapter_root) / "adapter_config.json" if adapter_root else None
+    adapter_cfg_path = (
+        Path(adapter_root) / "adapter_config.json" if adapter_root else None
+    )
     if adapter_cfg_path is not None and adapter_cfg_path.exists():
         adapter_cfg = json.loads(adapter_cfg_path.read_text(encoding="utf-8"))
         base_model_name = adapter_cfg["base_model_name_or_path"]
@@ -1045,9 +1047,7 @@ def run_finetune_consensus(
 
     # Continue from existing LoRA checkpoint when adapter_config.json is present.
     output_model_name = model_config.model_name
-    adapter_root = train_config.checkpoint_dir or Path(
-        model_config.model_name
-    )
+    adapter_root = train_config.checkpoint_dir or Path(model_config.model_name)
     adapter_cfg_path = Path(adapter_root) / "adapter_config.json"
     if adapter_cfg_path.exists():
         adapter_cfg = json.loads(adapter_cfg_path.read_text(encoding="utf-8"))
