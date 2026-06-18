@@ -13,6 +13,7 @@ azureml/.environment_tmp.yml
 # Ignore artificially generated fake data files
 fake_daily_rainfall/
 fake_daily_rainfall_2/
+test_data/fake/
 
 # Ignore model outputs
 outputs/
