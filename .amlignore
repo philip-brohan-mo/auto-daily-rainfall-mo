@@ -4,7 +4,8 @@
 # Sample / local data (lives on the datastore, not in the snapshot)
 Daily_rainfall_sample/
 outputs/
-fake_daily_rainfall
+fake_daily_rainfall/
+fake_daily_rainfall_2/
 test_data/
 logs/
 
