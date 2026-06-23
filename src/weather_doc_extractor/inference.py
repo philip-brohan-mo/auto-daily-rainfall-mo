@@ -44,6 +44,63 @@ _FAMILY_PATTERNS: list[tuple[str, list[str]]] = [
 ]
 
 
+def _extract_hf_model_id_from_snapshot_path(path_like: str) -> str | None:
+    """Derive a HuggingFace model ID from a hub snapshot/cache path.
+
+    Example:
+    ``.../hub/models--HuggingFaceTB--SmolVLM2-2.2B-Instruct/snapshots/<sha>``
+    -> ``HuggingFaceTB/SmolVLM2-2.2B-Instruct``
+    """
+    marker = "models--"
+    snapshots = "/snapshots/"
+    norm = str(path_like).replace("\\", "/")
+
+    start = norm.find(marker)
+    if start < 0:
+        return None
+    after = norm[start + len(marker) :]
+    end = after.find(snapshots)
+    if end < 0:
+        return None
+
+    repo_token = after[:end]
+    parts = repo_token.split("--", 1)
+    if len(parts) != 2:
+        return None
+    org, repo = parts[0].strip(), parts[1].strip()
+    if not org or not repo:
+        return None
+    return f"{org}/{repo}"
+
+
+def _normalize_model_reference(model_ref: str) -> str:
+    """Normalize model references from adapter configs across environments.
+
+    PEFT adapters can store ``base_model_name_or_path`` as an absolute cache
+    snapshot path from a different machine/job. When that path is not present
+    in the current runtime, convert it to a canonical HF model ID.
+    """
+    raw = str(model_ref).strip()
+    if not raw:
+        return raw
+
+    p = Path(raw)
+    if p.exists():
+        return raw
+
+    hf_model_id = _extract_hf_model_id_from_snapshot_path(raw)
+    if hf_model_id:
+        print(
+            f"[adapter] Normalized base model reference:\n"
+            f"           {raw}\n"
+            f"        -> {hf_model_id}",
+            flush=True,
+        )
+        return hf_model_id
+
+    return raw
+
+
 def detect_model_family(model_name: str) -> str:
     """Return the model family for *model_name*.
 
@@ -62,6 +119,7 @@ def detect_model_family(model_name: str) -> str:
         name = _json.loads(adapter_cfg.read_text()).get(
             "base_model_name_or_path", model_name
         )
+        name = _normalize_model_reference(str(name))
 
     lower = name.lower()
     for family, patterns in _FAMILY_PATTERNS:
@@ -414,6 +472,10 @@ def _resolve_model_path(model_name: str) -> str:
     from huggingface_hub import snapshot_download
     from huggingface_hub.utils import LocalEntryNotFoundError
 
+    model_name = _normalize_model_reference(model_name)
+    if Path(model_name).exists():
+        return model_name
+
     def _snapshot_is_complete(snapshot_path: Path) -> tuple[bool, str]:
         """Return (ok, reason) for a cached HF snapshot directory."""
         cfg = snapshot_path / "config.json"
@@ -705,7 +767,8 @@ def _load_model_and_processor(config: ModelConfig):  # type: ignore[return]
         else:
             try:
                 adapter_cfg = _json.loads(adapter_cfg_path.read_text())
-                base_model_name = adapter_cfg["base_model_name_or_path"]
+                base_model_name_raw = str(adapter_cfg["base_model_name_or_path"])
+                base_model_name = _normalize_model_reference(base_model_name_raw)
                 print(
                     f"[adapter] Loading checkpoint from {config.model_name}\n"
                     f"           Base model: {base_model_name}",

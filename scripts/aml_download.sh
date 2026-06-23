@@ -24,7 +24,7 @@
 # ── Examples ──────────────────────────────────────────────────────────────────
 #   bash scripts/aml_download.sh extractions
 #   bash scripts/aml_download.sh all
-#   bash scripts/aml_download.sh --src my_project/outputs/eval --dst /tmp/eval
+#   bash scripts/aml_download.sh --src my_project/outputs/eval --dst /var/tmp/eval
 
 set -euo pipefail
 

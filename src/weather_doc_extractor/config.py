@@ -112,6 +112,9 @@ class TrainingConfig:
     gradient_accumulation_steps: int = field(
         default_factory=lambda: _env_int("WEATHER_GRAD_ACCUM_STEPS", 8)
     )
+    auto_scale_grad_accum: bool = field(
+        default_factory=lambda: _env_bool("WEATHER_AUTO_SCALE_GRAD_ACCUM", True)
+    )
     eval_split: float = 0.1
     # LoRA hyper-parameters
     lora_r: int = 8

@@ -215,11 +215,25 @@ main() {
     # Create or check config
     if [[ -f "$config_file" ]] && [[ "$no_config_check" != true ]]; then
         echo -e "${YELLOW}Warning: config already exists at $config_file${NC}"
-        read -p "Overwrite config? (y/N) " -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo "Skipping config creation."
+        # Only prompt if running interactively (stdin is a terminal)
+        if [[ -t 0 ]]; then
+            read -p "Overwrite config? (y/N) " -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                echo "Skipping config creation."
+            else
+                echo -e "${GREEN}Creating config...${NC}"
+                python3 "$script_dir"/create_consensus_config.py \
+                    --variant-name "$variant_name" \
+                    --dataset-root "$dataset_root" \
+                    --agreement-threshold "$threshold" \
+                    --null-threshold "$null_threshold" \
+                    --precision "$precision" \
+                    --overwrite \
+                    --extraction-dirs "${extraction_dirs[@]}"
+            fi
         else
+            echo "Running non-interactively; overwriting existing config."
             echo -e "${GREEN}Creating config...${NC}"
             python3 "$script_dir"/create_consensus_config.py \
                 --variant-name "$variant_name" \

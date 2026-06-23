@@ -68,6 +68,9 @@ environment_variables:
   # Number of images per forward pass. Larger = better GPU utilisation but more VRAM.
   # 4 is a safe default for 16GB V100; increase for A100 (40GB).
   BATCH_SIZE: "4"
+  # Number of extraction workers launched per node (one per GPU).
+  # Set to 8 for Standard_ND96amsr_A100_v4 to use all GPUs on the node.
+  NODE_GPU_WORKERS: "1"
   SHARD: "1"
   TOTAL_SHARDS: "1"
 

@@ -16,6 +16,7 @@ run_finetune(records, model_config, train_config)
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -791,6 +792,136 @@ def _make_consensus_collate_fn(processor: Any, family: str):
 
 
 # ---------------------------------------------------------------------------
+# LoRA configuration helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_lora_task_type(family: str) -> str:
+    """Return appropriate PEFT task type for the given model family.
+
+    - Gemma4 uses AutoModelForCausalLM → task_type="CAUSAL_LM"
+    - All others (SmolVLM, Granite, Gemma3, Ministral) use
+      AutoModelForImageTextToText → task_type="SEQ_2_SEQ_LM"
+    """
+    return "CAUSAL_LM" if family == "gemma4" else "SEQ_2_SEQ_LM"
+
+
+def _training_device_map(model_device: str) -> str | dict[str, int] | None:
+    """Return a safe device_map for single-process and DDP fine-tuning.
+
+    In distributed launches (WORLD_SIZE > 1), ``device_map='auto'`` can conflict
+    with DDP process placement. Pin each process to its LOCAL_RANK device instead.
+    """
+    try:
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    except ValueError:
+        world_size = 1
+
+    if world_size <= 1:
+        return model_device
+
+    if model_device not in {"", "auto"}:
+        return model_device
+
+    try:
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    except ValueError:
+        local_rank = 0
+
+    return {"": local_rank}
+
+
+def _effective_gradient_accumulation_steps(
+    base_steps: int,
+    world_size: int,
+    auto_scale: bool,
+) -> int:
+    """Return gradient accumulation steps adjusted for distributed training.
+
+    Keeps global batch approximately stable when scaling from 1 process to many:
+    ``global_batch = per_device_batch * grad_accum * world_size``
+    """
+    base = max(1, int(base_steps))
+    ws = max(1, int(world_size))
+    if not auto_scale or ws <= 1:
+        return base
+    return max(1, (base + ws - 1) // ws)
+
+
+def _world_size_from_env() -> int:
+    """Return WORLD_SIZE from environment, defaulting to 1."""
+    try:
+        return max(1, int(os.environ.get("WORLD_SIZE", "1")))
+    except ValueError:
+        return 1
+
+
+def _get_canonical_model_id(model_name: str) -> str:
+    """Return the canonical HuggingFace model ID for the given model preset or full ID.
+
+    Maps short presets (e.g., 'smolvlm2') to their full HuggingFace IDs.
+    If an unknown preset is provided, returns the input as-is (assumed to be a full ID).
+
+    This mapping matches the one in aml_submit.sh (RESOLVED_TRAINING_MODEL_NAME).
+    """
+    preset_map = {
+        "smolvlm": "HuggingFaceTB/SmolVLM-500M-Instruct",
+        "smolvlm2": "HuggingFaceTB/SmolVLM2-2.2B-Instruct",
+        "granite": "ibm-granite/granite-vision-3.2-2b",
+        "granite4": "ibm-granite/granite-vision-4.1-4b",
+        "gemma3": "google/gemma-3-4b-it",
+        "gemma4": "google/gemma-4-E4B-it",
+        "ministral": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+    }
+    return preset_map.get(model_name, model_name)
+
+
+def _fix_adapter_config_json(adapter_dir: Path, canonical_base_model_id: str) -> None:
+    """Fix adapter_config.json to use canonical base_model_name_or_path.
+
+    PEFT saves the base_model_name_or_path as whatever was passed to model loading,
+    which could be a local HuggingFace cache path. When the adapter is loaded in a
+    different environment (e.g., Azure ML with a different cache path), this fails.
+
+    This function updates the adapter_config.json to use the canonical HuggingFace ID
+    instead, ensuring the adapter can be loaded in any environment.
+
+    Parameters
+    ----------
+    adapter_dir : Path
+        Directory containing the saved adapter (with adapter_config.json).
+    canonical_base_model_id : str
+        The canonical HuggingFace model ID (e.g., "HuggingFaceTB/SmolVLM2-2.2B-Instruct").
+    """
+    adapter_cfg_path = adapter_dir / "adapter_config.json"
+    if not adapter_cfg_path.exists():
+        return
+
+    try:
+        adapter_cfg = json.loads(adapter_cfg_path.read_text(encoding="utf-8"))
+        old_base = adapter_cfg.get("base_model_name_or_path", "")
+
+        # Only update if it looks like a local path (contains '/' or is obviously a cache path)
+        # and differs from the canonical ID
+        if old_base and old_base != canonical_base_model_id:
+            adapter_cfg["base_model_name_or_path"] = canonical_base_model_id
+            adapter_cfg_path.write_text(
+                json.dumps(adapter_cfg, indent=2) + "\n", encoding="utf-8"
+            )
+            print(
+                f"[finetune] Fixed adapter_config.json base_model_name_or_path:\n"
+                f"           {old_base}\n"
+                f"        → {canonical_base_model_id}",
+                flush=True,
+            )
+    except Exception as exc:
+        print(
+            f"[finetune] WARNING: Failed to fix adapter_config.json: {exc}",
+            flush=True,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Main fine-tuning entry point
 # ---------------------------------------------------------------------------
 
@@ -850,6 +981,19 @@ def run_finetune(
 
     train_examples = build_training_examples(train_records, family)
     eval_examples = build_training_examples(eval_records, family)
+    world_size = _world_size_from_env()
+    grad_accum_steps = _effective_gradient_accumulation_steps(
+        train_config.gradient_accumulation_steps,
+        world_size,
+        train_config.auto_scale_grad_accum,
+    )
+    if train_config.auto_scale_grad_accum and world_size > 1:
+        print(
+            "[finetune] Auto-scaled gradient accumulation steps for distributed training:\n"
+            f"           base={train_config.gradient_accumulation_steps} world_size={world_size} "
+            f"effective={grad_accum_steps}",
+            flush=True,
+        )
 
     # Resolve model path via HF cache (same logic as inference, avoids
     # re-downloading and bypasses the trust_remote_code Hub check)
@@ -875,6 +1019,7 @@ def run_finetune(
     hf_cache_dir: str | None = str(local_cache / "hub") if local_cache else None
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    train_device_map = _training_device_map(model_config.device)
 
     # Resume from an existing LoRA checkpoint when adapter_config.json is present.
     output_model_name = model_config.model_name
@@ -895,7 +1040,7 @@ def run_finetune(
 
         base_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
-            "device_map": model_config.device,
+            "device_map": train_device_map,
             **_remote_code_kwargs_for_family(family),
         }
         if hf_cache_dir:
@@ -918,7 +1063,7 @@ def run_finetune(
 
         model_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
-            "device_map": model_config.device,
+            "device_map": train_device_map,
             **_remote_code_kwargs_for_family(family),
         }
         if hf_cache_dir:
@@ -933,7 +1078,7 @@ def run_finetune(
             lora_dropout=train_config.lora_dropout,
             target_modules=target_modules,
             bias="none",
-            task_type="CAUSAL_LM",
+            task_type=_get_lora_task_type(family),
         )
         output_model_name = model_config.model_name
 
@@ -946,7 +1091,7 @@ def run_finetune(
         num_train_epochs=train_config.epochs,
         per_device_train_batch_size=train_config.batch_size,
         per_device_eval_batch_size=train_config.batch_size,
-        gradient_accumulation_steps=train_config.gradient_accumulation_steps,
+        gradient_accumulation_steps=grad_accum_steps,
         learning_rate=train_config.learning_rate,
         eval_strategy="epoch",
         save_strategy="epoch",
@@ -978,6 +1123,9 @@ def run_finetune(
 
     trainer.train()
     trainer.save_model(str(output_dir))
+    _fix_adapter_config_json(
+        output_dir, _get_canonical_model_id(model_config.model_name)
+    )
 
     return output_dir
 
@@ -1012,6 +1160,19 @@ def run_finetune_consensus(
 
     train_examples = build_consensus_training_examples(train_records, family)
     eval_examples = build_consensus_training_examples(eval_records, family)
+    world_size = _world_size_from_env()
+    grad_accum_steps = _effective_gradient_accumulation_steps(
+        train_config.gradient_accumulation_steps,
+        world_size,
+        train_config.auto_scale_grad_accum,
+    )
+    if train_config.auto_scale_grad_accum and world_size > 1:
+        print(
+            "[finetune-consensus] Auto-scaled gradient accumulation steps for distributed training:\n"
+            f"                     base={train_config.gradient_accumulation_steps} world_size={world_size} "
+            f"effective={grad_accum_steps}",
+            flush=True,
+        )
     if not train_examples:
         raise ValueError(
             "No valid consensus training examples with correct=true cells."
@@ -1044,6 +1205,7 @@ def run_finetune_consensus(
     hf_cache_dir: str | None = str(local_cache / "hub") if local_cache else None
 
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    train_device_map = _training_device_map(model_config.device)
 
     # Continue from existing LoRA checkpoint when adapter_config.json is present.
     output_model_name = model_config.model_name
@@ -1063,7 +1225,7 @@ def run_finetune_consensus(
 
         base_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
-            "device_map": model_config.device,
+            "device_map": train_device_map,
             **_remote_code_kwargs_for_family(load_family),
         }
         if hf_cache_dir:
@@ -1088,7 +1250,7 @@ def run_finetune_consensus(
 
         model_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
-            "device_map": model_config.device,
+            "device_map": train_device_map,
             **_remote_code_kwargs_for_family(family),
         }
         if hf_cache_dir:
@@ -1104,7 +1266,7 @@ def run_finetune_consensus(
             lora_dropout=train_config.lora_dropout,
             target_modules=target_modules,
             bias="none",
-            task_type="CAUSAL_LM",
+            task_type=_get_lora_task_type(family),
         )
 
     model_slug = output_model_name.replace("/", "--")
@@ -1116,7 +1278,7 @@ def run_finetune_consensus(
         num_train_epochs=train_config.epochs,
         per_device_train_batch_size=train_config.batch_size,
         per_device_eval_batch_size=train_config.batch_size,
-        gradient_accumulation_steps=train_config.gradient_accumulation_steps,
+        gradient_accumulation_steps=grad_accum_steps,
         learning_rate=train_config.learning_rate,
         eval_strategy="epoch",
         save_strategy="epoch",
@@ -1145,5 +1307,8 @@ def run_finetune_consensus(
 
     trainer.train()
     trainer.save_model(str(output_dir))
+    _fix_adapter_config_json(
+        output_dir, _get_canonical_model_id(model_config.model_name)
+    )
 
     return output_dir

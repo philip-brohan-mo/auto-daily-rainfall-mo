@@ -10,9 +10,11 @@ import pytest
 
 from weather_doc_extractor.finetune import (
     _consensus_answer_and_char_mask,
+    _effective_gradient_accumulation_steps,
     _find_last_subsequence,
     _ground_truth_json,
     _remote_code_kwargs_for_family,
+    _training_device_map,
     build_training_example,
     build_training_examples,
     build_consensus_training_example,
@@ -261,6 +263,39 @@ class TestConsensusHelpers:
         idx_false = answer.find(token_false)
         assert idx_false >= 0
         assert not any(char_mask[idx_false : idx_false + len(token_false)])
+
+
+class TestTrainingDeviceMap:
+    def test_single_process_keeps_auto(self):
+        with patch.dict("os.environ", {}, clear=False):
+            assert _training_device_map("auto") == "auto"
+
+    def test_distributed_auto_maps_to_local_rank(self):
+        with patch.dict(
+            "os.environ", {"WORLD_SIZE": "8", "LOCAL_RANK": "3"}, clear=False
+        ):
+            assert _training_device_map("auto") == {"": 3}
+
+    def test_distributed_explicit_device_is_preserved(self):
+        with patch.dict(
+            "os.environ", {"WORLD_SIZE": "8", "LOCAL_RANK": "2"}, clear=False
+        ):
+            assert _training_device_map("cuda:0") == "cuda:0"
+
+
+class TestEffectiveGradientAccumulationSteps:
+    def test_single_process_keeps_base(self):
+        assert _effective_gradient_accumulation_steps(8, 1, True) == 8
+
+    def test_distributed_scales_down_with_ceil_division(self):
+        assert _effective_gradient_accumulation_steps(8, 8, True) == 1
+        assert _effective_gradient_accumulation_steps(8, 3, True) == 3
+
+    def test_auto_scale_disabled_keeps_base(self):
+        assert _effective_gradient_accumulation_steps(8, 8, False) == 8
+
+    def test_never_below_one(self):
+        assert _effective_gradient_accumulation_steps(0, 8, True) == 1
 
     def test_build_consensus_training_example_returns_none_without_correct_cells(
         self, tmp_path
