@@ -416,6 +416,7 @@ case "$COMMAND" in
             --job-id "$JOB_ID" \
             --status submitted \
             --training-mode standard \
+                        --base-model-name-or-path "$RESOLVED_TRAINING_MODEL_NAME" \
             --notes "Auto-registered on finetune submit"
 
         echo "Model registry: $MODEL_REGISTRY_FILE"
@@ -475,6 +476,7 @@ case "$COMMAND" in
             --status submitted \
             --training-mode consensus-masked \
             --consensus-transcriptions-path "$AML_CONSENSUS_TRANSCRIPTIONS_PATH" \
+                        --base-model-name-or-path "$RESOLVED_TRAINING_MODEL_NAME" \
             --notes "Consensus finetune submit"
 
         echo "Model registry: $MODEL_REGISTRY_FILE"

@@ -68,6 +68,11 @@ def main():
         default="",
         help="Consensus transcription dataset path (if training_mode=consensus-masked)",
     )
+    parser.add_argument(
+        "--base-model-name-or-path",
+        default="",
+        help="Canonical HuggingFace model ID stored in adapter_config.json (e.g., HuggingFaceTB/SmolVLM2-2.2B-Instruct)",
+    )
     args = parser.parse_args()
 
     # Parse checkpoint path to extract timestamp
@@ -88,6 +93,10 @@ def main():
         "created_at": timestamp,
         "notes": args.notes,
     }
+    # Store the canonical HF model ID that's used in adapter_config.json
+    # This is used during extraction to resolve the correct base model
+    if args.base_model_name_or_path:
+        entry["base_model_name_or_path"] = args.base_model_name_or_path
 
     # Load existing registry or create new
     registry_path = Path(args.registry_file)

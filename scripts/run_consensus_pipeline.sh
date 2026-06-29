@@ -44,7 +44,7 @@ Usage: $(basename "$0") \\
 
 Options:
 Required options:
-    --dataset-root <path>      Root directory containing images/ and transcriptions/
+    --dataset-root <path>      Root directory for consensus output (creates if missing)
     --variant-name <name>      Name for this variant (e.g., 'consensus_1000')
     --extraction-dir <path>    Extraction directory (repeat for multiple models, typically 5)
 
@@ -53,6 +53,8 @@ Optional options:
     --null-threshold N         Null-value agreement threshold (default: same as --threshold)
     --precision P              Precision for decimals (default: 3)
     --validate                 Generate validation figures
+    --images-dir <path>        Directory containing source images for validation
+                               (default: <dataset-root>/images). Specify separately if images are elsewhere.
     --validation-sample-denominator N
                                When validating, generate a deterministic 1/N sample of figures
                                (default: 20; use 1 for all figures)
@@ -84,6 +86,7 @@ main() {
     local precision=3
     local validate=false
     local validation_sample_denominator=20
+    local images_dir=""
     local ground_truth_dir=""
     local no_config_check=false
     local extraction_dirs=()
@@ -123,6 +126,10 @@ main() {
                 ground_truth_dir="$2"
                 shift 2
                 ;;
+            --images-dir)
+                images_dir="$2"
+                shift 2
+                ;;
             --no-config-check)
                 no_config_check=true
                 shift
@@ -144,9 +151,14 @@ main() {
         print_usage
     fi
 
-    if [[ ! -d "$dataset_root" ]]; then
-        echo -e "${RED}Error: dataset-root not found: $dataset_root${NC}" >&2
+    if [[ -e "$dataset_root" && ! -d "$dataset_root" ]]; then
+        echo -e "${RED}Error: --dataset-root exists but is not a directory: $dataset_root${NC}" >&2
         exit 1
+    fi
+
+    if [[ ! -d "$dataset_root" ]]; then
+        echo -e "${YELLOW}Warning: dataset-root not found; creating: $dataset_root${NC}"
+        mkdir -p "$dataset_root"
     fi
 
     if [[ -z "$variant_name" ]]; then
@@ -275,6 +287,7 @@ main() {
         python3 "$script_dir"/validate_consensus.py \
             --config-file "$config_file" \
             --sample-denominator "$validation_sample_denominator" \
+            $(if [[ -n "$images_dir" ]]; then echo "--images-dir $images_dir"; fi) \
             $(if [[ -n "$ground_truth_dir" ]]; then echo "--ground-truth-dir $ground_truth_dir"; fi)
         echo -e "${GREEN}✓ Validation figures saved${NC}"
         echo "  Figures: $variant_dir/validation_figures/"

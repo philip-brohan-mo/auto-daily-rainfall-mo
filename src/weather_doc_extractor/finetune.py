@@ -1123,9 +1123,18 @@ def run_finetune(
 
     trainer.train()
     trainer.save_model(str(output_dir))
-    _fix_adapter_config_json(
-        output_dir, _get_canonical_model_id(model_config.model_name)
-    )
+    # When resuming from a checkpoint, use its canonical base model ID.
+    # When training from scratch, use the preset's canonical ID.
+    # This ensures adapter_config.json always contains the correct HF Hub ID,
+    # not a local datastore path.
+    if adapter_cfg_path is not None and adapter_cfg_path.exists():
+        adapter_cfg = json.loads(adapter_cfg_path.read_text(encoding="utf-8"))
+        loaded_base_model = adapter_cfg["base_model_name_or_path"]
+        _fix_adapter_config_json(output_dir, _get_canonical_model_id(loaded_base_model))
+    else:
+        _fix_adapter_config_json(
+            output_dir, _get_canonical_model_id(model_config.model_name)
+        )
 
     return output_dir
 
@@ -1307,8 +1316,17 @@ def run_finetune_consensus(
 
     trainer.train()
     trainer.save_model(str(output_dir))
-    _fix_adapter_config_json(
-        output_dir, _get_canonical_model_id(model_config.model_name)
-    )
+    # When resuming from a checkpoint, use its canonical base model ID.
+    # When training from scratch, use the preset's canonical ID.
+    # This ensures adapter_config.json always contains the correct HF Hub ID,
+    # not a local datastore path.
+    if adapter_cfg_path is not None and adapter_cfg_path.exists():
+        adapter_cfg = json.loads(adapter_cfg_path.read_text(encoding="utf-8"))
+        loaded_base_model = adapter_cfg["base_model_name_or_path"]
+        _fix_adapter_config_json(output_dir, _get_canonical_model_id(loaded_base_model))
+    else:
+        _fix_adapter_config_json(
+            output_dir, _get_canonical_model_id(model_config.model_name)
+        )
 
     return output_dir

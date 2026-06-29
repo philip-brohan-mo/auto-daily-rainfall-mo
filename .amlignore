@@ -6,6 +6,7 @@ Daily_rainfall_sample/
 outputs/
 fake_daily_rainfall/
 fake_daily_rainfall_2/
+consensus_data/
 test_data/
 logs/
 

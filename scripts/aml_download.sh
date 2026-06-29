@@ -16,7 +16,7 @@
 # ── Options ───────────────────────────────────────────────────────────────────
 #   --run-name NAME       Download extractions from a specific run (look up in registry)
 #   --output-dir DIR      Root local output directory (default: outputs/)
-#   --jobs N              Parallel download workers (default: 16)
+#   --jobs N              Parallel download connections for download-batch (default: 16)
 #   --quiet               Print only summary/error lines (faster on huge runs)
 #   --dry-run             Print az storage commands without executing them
 #   --help
@@ -135,89 +135,41 @@ else
 fi
 
 # ── Download helper ───────────────────────────────────────────────────────────
-# az storage blob download-batch fails when the container has zero-size
-# "directory marker" blobs (e.g. foo/bar) alongside content blobs at
-# foo/bar/file.json — the marker is written as a file which then blocks the
-# directory creation.  We work around this by listing blobs explicitly and
-# downloading each non-empty file individually.
+# Uses az storage blob download-batch for bulk parallel transfer (much faster
+# than per-blob downloads).  Zero-size "directory marker" blobs can cause
+# download-batch to create empty files that block subsequent directory
+# creation; we remove any such zero-byte files afterwards.
 do_download() {
     local src_path="$1"   # path prefix in the container, e.g. foo/outputs/extractions
     local dst="$2"        # local destination directory
     mkdir -p "$dst"
     if $DRY_RUN; then
-        echo "[dry-run] az storage blob list --prefix '${src_path}/' | parallel download"
-        echo "    workers: ${DOWNLOAD_JOBS}"
-        echo "      quiet: ${QUIET}"
-        echo "    (skip zero-size directory markers, download each content blob)"
-        echo "    --destination $dst"
-        echo "    (source: $AML_DATASTORE_BASE/$src_path)"
+        echo "[dry-run] az storage blob download-batch \\"
+        echo "    --account-name <account> --auth-mode login \\"
+        echo "    --source <container> --pattern '${src_path}/*' \\"
+        echo "    --destination <tmpdir> --max-connections ${DOWNLOAD_JOBS} --overwrite true"
+        echo "    (then move <tmpdir>/${src_path}/ → $dst)"
     else
         echo "Downloading from: ${src_path}"
         echo "             to:  $dst"
         echo "         workers: ${DOWNLOAD_JOBS}"
-        echo "           quiet: ${QUIET}"
-        az storage blob list \
+        local tmp_dir
+        tmp_dir=$(mktemp -d)
+        az storage blob download-batch \
             --account-name "$STORAGE_ACCOUNT" \
             --auth-mode login \
-            --container-name "$CONTAINER" \
-            --prefix "${src_path}/" \
-            --num-results "*" \
-            --query "[?properties.contentLength!=\`0\`].name" \
-            --output tsv \
-        | python3 -c "
-import os, sys, subprocess
-from concurrent.futures import ThreadPoolExecutor
-
-names = [line.strip() for line in sys.stdin if line.strip()]
-if not names:
-    print('Downloaded 0 files (0 markers skipped, 0 errors).')
-    sys.exit(0)
-
-prefix = '${src_path}/'
-dst_root = '${dst}'
-account = '${STORAGE_ACCOUNT}'
-container = '${CONTAINER}'
-workers = max(1, int('${DOWNLOAD_JOBS}'))
-quiet = '${QUIET}'.strip().lower() in {'1', 'true', 'yes', 'on'}
-
-def _download(name: str) -> tuple[bool, str]:
-    rel = name[len(prefix):] if name.startswith(prefix) else name
-    if not rel:
-        return True, ''
-    local_path = os.path.join(dst_root, rel)
-    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-    result = subprocess.run([
-        'az', 'storage', 'blob', 'download',
-        '--account-name', account,
-        '--auth-mode', 'login',
-        '--container-name', container,
-        '--name', name,
-        '--file', local_path,
-        '--overwrite', 'true',
-        '--no-progress',
-        '--only-show-errors',
-    ], check=False, capture_output=True, text=True)
-    if result.returncode != 0:
-        return False, '{}: {}'.format(rel, result.stderr.strip() or 'download failed')
-    return True, rel
-
-downloaded = 0
-failed = 0
-with ThreadPoolExecutor(max_workers=workers) as ex:
-    for ok, msg in ex.map(_download, names):
-        if ok:
-            if msg:
-                downloaded += 1
-                if not quiet:
-                    print('  {}'.format(msg), flush=True)
-        else:
-            failed += 1
-            print(f'  ERROR: {msg}', file=sys.stderr)
-
-print(f'Downloaded {downloaded} files (0 markers skipped, {failed} errors).')
-if failed:
-    sys.exit(1)
-"
+            --source "$CONTAINER" \
+            --destination "$tmp_dir" \
+            --pattern "${src_path}/*" \
+            --max-connections "${DOWNLOAD_JOBS}" \
+            --overwrite true \
+            $($QUIET && echo "--only-show-errors" || true)
+        # Move contents from prefix subdir to final destination, removing
+        # any zero-byte directory marker files left by download-batch.
+        find "$tmp_dir/${src_path}" -type f -empty -delete
+        mkdir -p "$dst"
+        cp -a "$tmp_dir/${src_path}/." "$dst/"
+        rm -rf "$tmp_dir"
         echo "Done."
     fi
     echo
